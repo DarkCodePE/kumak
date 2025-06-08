@@ -49,6 +49,7 @@ class PYMESState(TypedDict):
 
     # Entrada actual del usuario
     input: str
+    answer: str
 
     # Información del negocio
     business_info: BusinessInfo
