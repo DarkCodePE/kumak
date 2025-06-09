@@ -206,29 +206,50 @@ def human_feedback(state: PYMESState) -> Command:
     Si el usuario escribe "done", "gracias" o "adiós", finaliza la conversación;
     en caso contrario, retorna al nodo de generación para continuar.
     """
-    print("\n[human_feedback] Esperando retroalimentación del usuario...")
+    # El print "[human_feedback] Esperando retroalimentación del usuario..."
+    # se imprimirá ANTES de que la interrupción ocurra.
+    # Cuando el webhook recibe el mensaje del usuario y llama a process_message
+    # con is_resuming=True, y luego graph.invoke(Command(resume=user_actual_message)),
+    # es entonces cuando la función interrupt() "devuelve" user_actual_message.
 
-    # Utiliza interrupt() para pausar la ejecución y solicitar la entrada del usuario.
-    user_input = interrupt({
-        "answer": state["answer"],
+    # El siguiente print es útil para ver qué valor se "inyectó" en la interrupción.
+    # No se imprimirá hasta que la interrupción se haya reanudado.
+    # print("\n[human_feedback] DEBUG: Justo antes de llamar a interrupt()")
+
+    user_input_from_interrupt = interrupt({
+        # "answer" aquí es el último AIMessage que el LLM generó antes de este nodo.
+        # En la primera vuelta, state["answer"] estará vacío si no se inicializó.
+        # En las siguientes, será la respuesta del LLM del turno anterior.
+        "answer": state.get("answer", "Esperando respuesta inicial del asistente."), # Proporcionar un default
         "message": "Proporcione su feedback o escriba 'done' para finalizar la conversación:"
     })
-    print(f"[human_feedback] Feedback recibido: {user_input}")
 
-    # Actualiza el historial de feedback; si no existe, inicialízalo.
-    updated_feedback = state.get("feedback", []) + [user_input]
+    # Este print ahora sí mostrará el feedback real que el usuario envió y que reanudó la interrupción
+    print(f"\n[human_feedback] Feedback recibido del usuario (tras reanudar interrupt): {user_input_from_interrupt}")
 
-    # Actualiza el campo 'input' para que el siguiente turno (en generate_response) utilice el feedback.
-    new_input = user_input
+    # Actualiza el historial de feedback (esto es para tu propio tracking si lo necesitas)
+    updated_feedback_list = state.get("feedback", []) + [user_input_from_interrupt]
 
-    # Si el usuario indica que quiere terminar la conversación,
-    # redirige al nodo final (end_node).
-    # Si el usuario indica que desea terminar la conversación, redirige al nodo final.
-    if user_input.strip().lower() in ["done", "gracias", "adiós"]:
-        return Command(update={"feedback": updated_feedback, "input": new_input}, goto="end_node")
+    # El mensaje del usuario DEBE ser añadido al historial de conversación
+    # para que generate_response lo vea.
+    user_message_for_history = HumanMessage(content=user_input_from_interrupt)
 
-    # En caso contrario, continúa el ciclo volviendo al nodo generate_response.
-    return Command(update={"feedback": updated_feedback, "input": new_input}, goto="generate_response")
+    # El campo 'input' del estado se usa en generate_response para el prompt.
+    # Es correcto actualizarlo con la última entrada del usuario.
+    current_user_input_for_state = user_input_from_interrupt
+
+    update_payload = {
+        "messages": [user_message_for_history],  # Esto será recogido por add_messages
+        "feedback": updated_feedback_list,
+        "input": current_user_input_for_state
+    }
+
+    if user_input_from_interrupt.strip().lower() in ["done", "gracias", "adiós", "adios"]:
+        logger.info(f"Usuario {state.get('thread_id', 'unknown')} finalizó conversación con: {user_input_from_interrupt}")
+        return Command(update=update_payload, goto="end_node")
+    else:
+        logger.info(f"Usuario {state.get('thread_id', 'unknown')} continúa conversación con: {user_input_from_interrupt}")
+        return Command(update=update_payload, goto="generate_response")
 
 
 def end_node(state: PYMESState) -> Dict[str, Any]:

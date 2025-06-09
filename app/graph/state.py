@@ -48,22 +48,23 @@ class PYMESState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
 
     # Entrada actual del usuario
-    input: str
-    answer: str
+    input: Optional[str]
+    answer: Optional[str]
+    feedback: List[str]
 
     # Información del negocio
-    business_info: BusinessInfo
-    growth_goals: GrowthGoals
-    business_challenges: BusinessChallenges
+    business_info: Optional[BusinessInfo]
+    growth_goals: Optional[GrowthGoals]
+    business_challenges: Optional[BusinessChallenges]
 
     # Estado del proceso
-    stage: str  # "info_gathering", "analysis", "proposal_generation", "conversation"
+    stage: Optional[str]  # "info_gathering", "analysis", "proposal_generation", "conversation"
 
     # Propuesta generada
     growth_proposal: Optional[GrowthProposal]
 
     # Contexto y memoria
-    context: str
+    context: Optional[str]
     summary: Optional[str]
     web_search: Optional[str]
     documents: Optional[List[Document]]

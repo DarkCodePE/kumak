@@ -66,7 +66,7 @@ def process_message(
             # Prepare the initial state
             initial_state = {
                 "input": message,
-                "messages": [HumanMessage(content=message)],  # Agregar mensaje inicial directamente
+                "messages": [HumanMessage(content=message)],
                 "business_info": {},
                 "growth_goals": {},
                 "business_challenges": {},
@@ -75,7 +75,9 @@ def process_message(
                 "context": "",
                 "summary": "",
                 "web_search": None,
-                "documents": None
+                "documents": None,
+                "answer": "",
+                "human_feedback": []
             }
 
             graph_input = initial_state
@@ -91,65 +93,59 @@ def process_message(
             raise graph_error
 
         # Get the current state after execution
-        state_snapshot = graph.get_state(config)
+        state = graph.get_state(config)
 
-        # Check for interrupts - more robust checking
+        # If the next node to execute is human_feedback, we're in an interrupt
         is_interrupted = False
-        interrupt_info = None
+        if state.next and any("human_feedback" in node for node in state.next):
+            is_interrupted = True
+            logger.info(f"Graph interrupted at human_feedback for thread {thread_id}")
 
-        # Check if there are pending tasks with interrupts
-        if state_snapshot.tasks:
-            for task in state_snapshot.tasks:
-                if hasattr(task, 'interrupts') and task.interrupts:
-                    is_interrupted = True
-                    interrupt_info = task.interrupts[0].value if task.interrupts else None
-                    logger.info(f"Graph interrupted for thread {thread_id}, interrupt data: {interrupt_info}")
-                    break
+        # --- Obtener estado y comprobar interrupción ---
+        # Obtener el checkpoint MÁS RECIENTE (que ahora sabemos es un dict)
+        latest_checkpoint_dict: Optional[Dict] = graph.checkpointer.get(config)
+        if not latest_checkpoint_dict:
+            logger.error(f"[Thread: {thread_id}] CRITICAL: Checkpoint dictionary not found after invocation.")
+            return {"status": "error", "error": "Checkpoint dict retrieval failed"}
 
-        # Alternative check: see if next node is human_feedback
-        if not is_interrupted and state_snapshot.next:
-            if any("human_feedback" in str(node) for node in state_snapshot.next):
-                is_interrupted = True
-                logger.info(f"Graph interrupted at human_feedback for thread {thread_id}")
+        # *** CORRECCIÓN DEFINITIVA AQUÍ ***
+        # Acceder directamente a la clave 'channel_values' del diccionario
+        final_state_values: Dict[str, Any] = latest_checkpoint_dict.get('channel_values', {})  # Usa .get para seguridad
+        # *********************************
 
-        # Extract the final answer
-        final_answer = "No se pudo generar una respuesta."
-        final_state_values = state_snapshot.values
+        # Obtener 'next' del StateSnapshot (esto sigue igual)
+        state_snapshot = graph.get_state(config)
+        next_nodes = state_snapshot.next
+        logger.info(f"[Thread: {thread_id}] Latest state retrieved. Next nodes: {next_nodes}")
+
+        # --- Extraer la respuesta final (usando final_state_values) ---
+        final_answer_content = "El asistente no generó una respuesta en este turno."
+        # Usar .get() en el diccionario final_state_values
         all_messages: List[BaseMessage] = final_state_values.get("messages", [])
-
+        # ***********************
         if all_messages:
             # Search for the last AI message
             for msg in reversed(all_messages):
                 if isinstance(msg, AIMessage):
                     final_answer = msg.content
-                    logger.info(f"Found last AI message content for thread {thread_id}")
+                    logger.info(f"[Thread: {thread_id}] Found last AI message content.")
+                    break
+                # Handle other potential message formats
+                elif hasattr(msg, 'role') and msg.get('role') == 'ai':
+                    final_answer = msg.get('content', 'No content found')
+                    logger.info(f"[Thread: {thread_id}] Found last AI message from role.")
                     break
         else:
-            logger.warning(f"No messages found in final state values for thread {thread_id}")
+            logger.warning(f"[Thread: {thread_id}] No messages found in final state values.")
 
-        # Prepare response based on channel
-        response = {
+        # Return appropriate response based on whether we're interrupted
+        return {
             "thread_id": thread_id,
             "message": message,
             "answer": final_answer,
-            "status": "interrupted" if is_interrupted else "completed"
+            "status": "interrupted" if is_interrupted else "completed",
+            "interrupt_message": "Proporcione su feedback o escriba 'done' para finalizar" if is_interrupted else None
         }
-
-        # Add interrupt-specific information
-        if is_interrupted:
-            response["interrupt_message"] = "Proporcione su feedback o escriba 'done' para finalizar"
-            if interrupt_info:
-                response["interrupt_data"] = interrupt_info
-
-        # Add WhatsApp-specific handling
-        if is_whatsapp:
-            response["channel"] = "whatsapp"
-            # Truncate very long messages for WhatsApp
-            if len(final_answer) > 4000:
-                response["answer"] = final_answer[:3990] + "...\n\n💬 Mensaje truncado"
-
-        logger.info(f"Message processed successfully for thread {thread_id}, status: {response['status']}")
-        return response
 
     except Exception as e:
         error_detail = str(e) if str(e) else "Unknown error (empty exception message)"
