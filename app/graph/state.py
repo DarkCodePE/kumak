@@ -1,4 +1,5 @@
-from typing import List, Optional, Dict, Any, TypedDict, Annotated
+from typing import List, Optional, Dict, Any, Annotated
+from typing_extensions import TypedDict
 from operator import add
 
 from langchain_core.documents import Document

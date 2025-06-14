@@ -45,3 +45,4 @@ semantic-router
 google-api-python-client
 langchain_core
 pydantic_settings
+typing_extensions
