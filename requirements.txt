@@ -43,3 +43,5 @@ langgraph-checkpoint-postgres
 langchain_qdrant
 semantic-router
 google-api-python-client
+langchain_core
+pydantic_settings

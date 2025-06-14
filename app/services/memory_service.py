@@ -20,10 +20,13 @@ class MemoryService:
     """Servicio de memoria a largo plazo para información de negocios."""
     
     def __init__(self):
-        self.engine = create_engine(DATABASE_URL)
+        # ✅ CORRECTO - PostgreSQL para persistencia
+        self.engine = create_engine(DATABASE_URL)  # PostgreSQL
         self.Session = sessionmaker(bind=self.engine)
-        self.store = get_postgres_store()
+        self.store = get_postgres_store()          # LangGraph PostgresStore
         self.embeddings = OpenAIEmbeddings()
+        
+        logger.info("MemoryService inicializado con PostgreSQL para persistencia duradera")
     
     def save_business_info(self, thread_id: str, business_info: Dict[str, Any]) -> bool:
         """
