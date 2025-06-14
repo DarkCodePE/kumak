@@ -7,14 +7,16 @@ from langgraph.graph import add_messages
 from pydantic import BaseModel
 
 
-class BusinessInfo(TypedDict):
-    """Información básica del negocio."""
-    nombre_empresa: Optional[str]
-    sector: Optional[str]
-    descripcion: Optional[str]
+class BusinessInfo(TypedDict, total=False):
+    """Información fáctica y descriptiva del negocio."""
+    nombre_empresa: str
+    sector: str  # e.g., "Restaurantes", "Software (SaaS)", "Retail de moda"
+    productos_servicios_principales: List[str]
+    desafios_principales: List[str]
+    ubicacion: str  # e.g., "Lima, Perú", "Online", "Nacional"
+    descripcion_negocio: str  # 'descripcion' renombrada para mayor claridad
     anos_operacion: Optional[int]
     num_empleados: Optional[int]
-    ubicacion: Optional[str]
 
 
 class GrowthGoals(TypedDict):
@@ -68,3 +70,7 @@ class PYMESState(TypedDict):
     summary: Optional[str]
     web_search: Optional[str]
     documents: Optional[List[Document]]
+    
+    # Multi-agent state
+    current_agent: Optional[str]  # Agente activo actual
+    last_handoff: Optional[str]   # Última descripción de handoff
