@@ -1,6 +1,6 @@
 import logging
 import time
-from typing import Dict, Any, List, Literal, Annotated
+from typing import Dict, Any, List, Literal, Annotated, Optional
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import tool
@@ -8,19 +8,123 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, START, END, MessagesState
 from langgraph.prebuilt import create_react_agent, InjectedState
 from langgraph.types import Command, interrupt
+from pydantic import BaseModel, Field
 
 from app.config.settings import LLM_MODEL
 from app.graph.state import PYMESState
 from app.services.memory_service import get_memory_service
+from app.services.business_info_manager import get_business_info_manager
 
 logger = logging.getLogger(__name__)
 
 
+# === MODELOS PYDANTIC PARA STRUCTURED OUTPUT ===
+
+class BusinessInfoExtracted(BaseModel):
+    """Modelo Pydantic para extracción estructurada de información del negocio."""
+    nombre_empresa: Optional[str] = Field(None, description="Nombre de la empresa o negocio")
+    sector: Optional[str] = Field(None, description="Sector o industria (ej: Restaurantes, Software, Retail)")
+    productos_servicios_principales: Optional[List[str]] = Field(None, description="Lista de productos o servicios principales")
+    desafios_principales: Optional[List[str]] = Field(None, description="Principales desafíos o problemas del negocio")
+    ubicacion: Optional[str] = Field(None, description="Ubicación de operación (ciudad, país, online)")
+    descripcion_negocio: Optional[str] = Field(None, description="Descripción general del negocio")
+    anos_operacion: Optional[int] = Field(None, description="Años de operación del negocio")
+    num_empleados: Optional[int] = Field(None, description="Número de empleados")
+    
+    # Campos de confianza para saber qué tan seguro está el modelo
+    confidence_score: Optional[float] = Field(None, description="Puntuación de confianza (0.0-1.0)")
+    extracted_fields: Optional[List[str]] = Field(None, description="Lista de campos que se extrajeron en esta pasada")
+
+
+# === PATRÓN DEL CÓDIGO DE REFERENCIA ===
+
+# === NODOS SIGUIENDO EL PATRÓN DE REFERENCIA ===
+
+async def business_info_extraction_node(state: PYMESState) -> Dict[str, Any]:
+    """Extract and store important business information from the last message."""
+    logger.info("🚀 business_info_extraction_node iniciado")
+    
+    if not state.get("messages"):
+        logger.warning("⚠️ No hay mensajes en el estado")
+        return {}
+
+    # Obtener thread_id del estado
+    thread_id = get_thread_id_from_state(state)
+    logger.info(f"🔗 Thread ID obtenido: {thread_id}")
+
+    business_info_manager = get_business_info_manager()
+    current_info = state.get("business_info", {})
+    last_message = state["messages"][-1]
+    
+    logger.info(f"📥 Estado business_info ANTES de extracción: {current_info}")
+    logger.info(f"💬 Procesando mensaje: {last_message.content[:100]}...")
+    
+    # Pasar thread_id al manager
+    updated_info = await business_info_manager.extract_and_store_business_info(
+        last_message, current_info, thread_id
+    )
+    
+    logger.info(f"📤 Estado business_info DESPUÉS de extracción: {updated_info}")
+    
+    # Verificar si hubo cambios
+    if updated_info != current_info:
+        logger.info("✅ ESTADO BUSINESS_INFO ACTUALIZADO - Devolviendo cambios al grafo")
+    else:
+        logger.info("ℹ️ No hubo cambios en business_info")
+    
+    result = {"business_info": updated_info}
+    logger.info(f"🔄 Devolviendo al grafo: {result}")
+    
+    return result
+
+def business_info_injection_node(state: PYMESState) -> Dict[str, Any]:
+    """Retrieve and inject relevant business information into the context."""
+    business_info_manager = get_business_info_manager()
+    business_info = state.get("business_info", {})
+    
+    # Get relevant business info based on recent conversation
+    recent_context = " ".join([m.content for m in state.get("messages", [])[-3:]])
+    business_context = business_info_manager.format_business_info_for_prompt(business_info)
+    
+    return {"business_context": business_context}
+
+
 # === FUNCIONES AUXILIARES ===
 
+async def business_info_evaluator_node(state: PYMESState) -> Dict[str, Any]:
+    """
+    Simple business info extraction node following the reference pattern.
+    Replaces the complex evaluator with the simple extraction pattern.
+    """
+    try:
+        logger.info("🔍 business_info_evaluator_node activado")
+        
+        # Obtener estado actual para logging
+        current_business_info = state.get("business_info", {})
+        logger.info(f"📊 Estado business_info al INICIO del evaluador: {current_business_info}")
+        
+        # Use the extraction node pattern from the reference code
+        result = await business_info_extraction_node(state)
+        
+        # Verificar el resultado
+        new_business_info = result.get("business_info", {})
+        logger.info(f"📊 Estado business_info al FINAL del evaluador: {new_business_info}")
+        
+        if new_business_info != current_business_info:
+            logger.info("✅ EVALUADOR CONFIRMÓ CAMBIOS EN BUSINESS_INFO")
+        else:
+            logger.info("ℹ️ Evaluador no detectó cambios")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error in business info extraction: {str(e)}")
+        return {}
+
+
 def get_thread_id_from_state(state: PYMESState) -> str:
-    """Extrae thread_id del estado."""
-    # Intentar obtener de diferentes fuentes
+    """Extract thread_id from the state."""
+    # Try to get from different sources
     thread_id = state.get("thread_id")
 
     if not thread_id:
@@ -33,76 +137,37 @@ def get_thread_id_from_state(state: PYMESState) -> str:
 
 
 def extract_business_info_from_conversation(messages: List, current_state: PYMESState) -> Dict[str, Any]:
-    """Extrae información del negocio de la conversación actual."""
-    try:
-        # Obtener información existente
-        existing_info = current_state.get("business_info", {})
-
-        # Buscar información en los mensajes más recientes
-        recent_content = ""
-        for msg in messages[-3:]:  # Últimos 3 mensajes
-            if isinstance(msg, HumanMessage):
-                recent_content += f"Usuario: {msg.content}\n"
-            elif isinstance(msg, AIMessage):
-                recent_content += f"Asistente: {msg.content}\n"
-
-        # Lógica simple de extracción (en producción usarías un LLM con structured output)
-        updated_info = existing_info.copy()
-
-        # Extraer nombre de empresa
-        if not updated_info.get("nombre_empresa"):
-            if "empresa" in recent_content.lower() or "negocio" in recent_content.lower():
-                lines = recent_content.split('\n')
-                for line in lines:
-                    if any(keyword in line.lower() for keyword in ["empresa", "negocio", "llamo", "llama"]):
-                        # Lógica simple de extracción
-                        words = line.split()
-                        if len(words) > 2:
-                            updated_info["nombre_empresa"] = ' '.join(words[2:5])  # Tomar algunas palabras
-                        break
-
-        # Extraer sector
-        if not updated_info.get("sector"):
-            sector_keywords = ["restaurante", "software", "retail", "construcción", "salud", "educación"]
-            for keyword in sector_keywords:
-                if keyword in recent_content.lower():
-                    updated_info["sector"] = keyword.capitalize()
-                    break
-
-        # Solo retornar si hay información nueva
-        if updated_info != existing_info:
-            return updated_info
-
-        return None
-
-    except Exception as e:
-        logger.error(f"Error extrayendo información del negocio: {str(e)}")
-        return None
+    """
+    DEPRECATED: Simple function replaced by business_info_evaluator_node.
+    Kept for compatibility.
+    """
+    # This function now only returns the current state's information
+    return current_state.get("business_info", {})
 
 
 def extract_research_from_messages(messages: List) -> str:
-    """Extrae contenido de investigación de los mensajes."""
+    """Extract research content from the messages."""
     try:
         research_content = ""
         for msg in messages:
             if isinstance(msg, AIMessage) and msg.content:
                 content = msg.content
-                # Buscar indicadores de investigación
+                # Search for research indicators
                 if any(keyword in content.lower() for keyword in
-                       ["investigación", "análisis", "oportunidades", "tendencias", "mercado"]):
+                       ["research", "analysis", "opportunities", "trends", "market"]):
                     research_content += content + "\n"
 
         return research_content.strip() if research_content else None
 
     except Exception as e:
-        logger.error(f"Error extrayendo investigación: {str(e)}")
+        logger.error(f"Error extracting research: {str(e)}")
         return None
 
 
-# === HERRAMIENTAS DE HANDOFF ENTRE AGENTES ===
+# === HANDOFF TOOLS BETWEEN AGENTS ===
 
 def create_handoff_tool(*, agent_name: str, description: str | None = None):
-    """Crea una herramienta de handoff siguiendo el patrón LangGraph."""
+    """Creates a handoff tool following the LangGraph pattern."""
     name = f"transfer_to_{agent_name}"
     description = description or f"Transfer control to {agent_name} agent."
 
@@ -130,7 +195,7 @@ def create_handoff_tool(*, agent_name: str, description: str | None = None):
     return handoff_tool
 
 
-# Crear herramientas de handoff específicas
+# Create specific handoff tools
 transfer_to_info_extractor = create_handoff_tool(
     agent_name="info_extractor",
     description="Transfer to the business information extraction specialist when you need to collect or update basic company data."
@@ -149,152 +214,152 @@ transfer_to_consultant = create_handoff_tool(
 
 @tool
 def get_business_info_status():
-    """Verificar el estado actual de la información del negocio recopilada."""
-    # Esta herramienta checkeará el estado actual
-    return "Información del negocio: En progreso/Completa/Faltante"
+    """Check the current status of business information collected."""
+    # This tool will check the current status
+    return "Business information: In progress/Complete/Missing"
 
 
 @tool
 def get_research_status():
-    """Verificar si ya se ha realizado investigación de mercado para este negocio."""
-    return "Investigación: No iniciada/En progreso/Completada"
+    """Check if market research has been done for this business."""
+    return "Research: Not started/In progress/Completed"
 
 
-# === PROMPTS PARA CADA AGENTE ===
+# === PROMPTS FOR EACH AGENT ===
 
 SUPERVISOR_PROMPT = """
-Eres el SUPERVISOR de un equipo de consultores especializados en PYMES. Tu trabajo es coordinar y dirigir las conversaciones hacia el agente correcto.
+You are the SUPERVISOR of a team of specialized consultants for PYMES. Your job is to coordinate and direct conversations towards the correct agent.
 
-AGENTES DISPONIBLES:
-1. **info_extractor**: Especialista en recopilar información básica del negocio (nombre, sector, productos, desafíos, ubicación, etc.)
-2. **researcher**: Especialista en investigación de mercado, análisis de oportunidades y tendencias del sector
-3. **consultant**: Consultor conversacional para dudas específicas, preguntas generales y asesoramiento personalizado
+AVAILABLE AGENTS:
+1. **info_extractor**: Specialist in collecting basic business information (name, sector, products, challenges, location, etc.)
+2. **researcher**: Specialist in market research, analyzing opportunities and trends in the sector
+3. **consultant**: Conversational consultant for specific questions, general questions, and personalized advice
 
-ESTADO ACTUAL:
-- Información del negocio: {business_info_status}
-- Investigación realizada: {research_status}
+CURRENT STATE:
+- Business information: {business_info_status}
+- Research done: {research_status}
 
-REGLAS DE DECISIÓN:
-1. Si NO hay información básica del negocio → **transfer_to_info_extractor**
-2. Si hay información básica pero NO hay investigación → **transfer_to_researcher** 
-3. Si el usuario hace preguntas específicas o quiere conversar → **transfer_to_consultant**
-4. Si el usuario quiere actualizar/corregir información → **transfer_to_info_extractor**
-5. Si el usuario quiere nueva investigación → **transfer_to_researcher**
+DECISION RULES:
+1. If NO basic business information → **transfer_to_info_extractor**
+2. If basic information but NO research → **transfer_to_researcher** 
+3. If the user asks specific questions or wants to chat → **transfer_to_consultant**
+4. If the user wants to update/correct information → **transfer_to_info_extractor**
+5. If the user wants new research → **transfer_to_researcher**
 
-Analiza el mensaje del usuario y el estado actual, luego transfiere al agente apropiado.
-NO intentes responder directamente - siempre transfiere a un especialista.
+Analyze the user's message and current state, then transfer to the appropriate agent.
+DO NOT attempt to answer directly - always transfer to a specialist.
 """
 
 INFO_EXTRACTOR_PROMPT = """
-Eres un ESPECIALISTA EN RECOPILACIÓN DE INFORMACIÓN EMPRESARIAL para PYMES.
+You are a SPECIALIST IN BUSINESS INFORMATION COLLECTION FOR PYMES.
 
-Tu trabajo es recopilar de manera conversacional y amigable la siguiente información:
+Your job is to collect conversational and friendly the following information:
 
-INFORMACIÓN REQUERIDA:
-- 🏢 **Nombre de la empresa**
-- 🏭 **Sector/Industria** (ej: "Restaurantes", "Software", "Retail")
-- 💼 **Productos/Servicios principales** 
-- ⚠️ **Desafíos principales** del negocio
-- 📍 **Ubicación** de operación
-- 📝 **Descripción** del negocio
+REQUIRED INFORMATION:
+- �� **Company Name**
+- 🏭 **Sector/Industry** (e.g. "Restaurants", "Software", "Retail")
+- 💼 **Main Products/Services** 
+- ⚠️ **Main Challenges** of the business
+- 📍 **Location** of operation
+- �� **Description** of the business
 
-INFORMACIÓN OPCIONAL:
-- Años de operación
-- Número de empleados
+OPTIONAL INFORMATION:
+- Operation years
+- Number of employees
 
-INSTRUCCIONES:
-- Haz UNA pregunta específica a la vez
-- Sé conversacional y empático
-- Confirma información antes de continuar
-- Usa ejemplos para ayudar al usuario
-- Cuando tengas TODA la información requerida, usa **transfer_to_researcher**
+INSTRUCTIONS:
+- Ask ONE specific question at a time
+- Be conversational and empathetic
+- Confirm information before continuing
+- Use examples to help the user
+- When you have ALL the required information, use **transfer_to_researcher**
 
-HERRAMIENTAS DISPONIBLES:
-- transfer_to_researcher: Cuando tengas información completa
-- transfer_to_consultant: Si el usuario tiene dudas no relacionadas con datos básicos
+AVAILABLE TOOLS:
+- transfer_to_researcher: When you have complete information
+- transfer_to_consultant: If the user has doubts not related to basic data
 """
 
 RESEARCHER_PROMPT = """
-Eres un ESPECIALISTA EN INVESTIGACIÓN DE MERCADO Y OPORTUNIDADES para PYMES.
+You are a SPECIALIST IN MARKET RESEARCH AND OPPORTUNITIES FOR PYMES.
 
-Tu trabajo es:
-1. Analizar la información del negocio disponible
-2. Realizar investigación web específica sobre:
-   - Tendencias del sector
-   - Oportunidades de mercado
-   - Mejores prácticas
-   - Análisis competitivo
-   - Soluciones a desafíos identificados
-3. Presentar análisis y recomendaciones estructuradas
+Your job is:
+1. Analyze the business information available
+2. Perform specific web research on:
+   - Sector trends
+   - Market opportunities
+   - Best practices
+   - Competitive analysis
+   - Solutions to identified challenges
+3. Present structured analysis and recommendations
 
-HERRAMIENTAS DISPONIBLES:
-- search: Búsqueda web para investigación de mercado
-- transfer_to_consultant: Para conversación sobre los resultados
-- transfer_to_info_extractor: Si necesitas más información del negocio
+AVAILABLE TOOLS:
+- search: Web search for market research
+- transfer_to_consultant: For conversation about results
+- transfer_to_info_extractor: If you need more business information
 
-Cuando presentes resultados, sé específico y práctico. Pregunta al usuario si quiere profundizar en algún área específica.
+When presenting results, be specific and practical. Ask the user if they want to delve deeper into a specific area.
 """
 
 CONSULTANT_PROMPT = """
-Eres un CONSULTOR CONVERSACIONAL especializado en PYMES.
+You are a CONVERSATIONAL CONSULTANT specialized in PYMES.
 
-Tu trabajo es:
-- Responder preguntas específicas sobre el negocio
-- Brindar asesoramiento personalizado
-- Aclarar dudas sobre recomendaciones
-- Mantener conversación fluida y útil
-- Generar planes de acción detallados
+Your job is:
+- Respond to specific questions about the business
+- Provide personalized advice
+- Clarify doubts about recommendations
+- Maintain fluid and useful conversation
+- Generate detailed action plans
 
-HERRAMIENTAS DISPONIBLES:
-- search: Búsqueda web para información específica
-- search_documents: Búsqueda en documentos internos
-- transfer_to_info_extractor: Si necesitas actualizar información básica
-- transfer_to_researcher: Si necesitas nueva investigación
+AVAILABLE TOOLS:
+- search: Web search for specific information
+- search_documents: Internal document search
+- transfer_to_info_extractor: If you need to update basic information
+- transfer_to_researcher: If you need new research
 
-Eres empático, práctico y orientado a resultados. Siempre busca ser útil y accionable.
+You are empathetic, practical, and results-oriented. Always seek to be useful and actionable.
 """
 
 
-# === FUNCIONES DE ESTADO ===
+# === STATE FUNCTIONS ===
 
 def get_business_info_status_from_state(state: PYMESState) -> str:
-    """Obtiene el estado actual de la información del negocio."""
+    """Get the current status of business information."""
     business_info = state.get("business_info", {})
     required_fields = ["nombre_empresa", "sector", "productos_servicios_principales", "ubicacion"]
 
     if not business_info:
-        return "No iniciada"
+        return "Not started"
 
     missing_fields = [field for field in required_fields if not business_info.get(field)]
 
     if not missing_fields:
-        return "Completa"
+        return "Complete"
     elif len(missing_fields) < len(required_fields):
-        return "Parcial"
+        return "Partial"
     else:
-        return "Faltante"
+        return "Missing"
 
 
 def get_research_status_from_state(state: PYMESState) -> str:
-    """Obtiene el estado actual de la investigación."""
+    """Get the current status of research."""
     context = state.get("context", "")
     web_search = state.get("web_search", "")
     stage = state.get("stage", "")
 
     if stage == "research_completed" or context or web_search:
-        return "Completada"
+        return "Completed"
     elif stage == "research_in_progress":
-        return "En progreso"
+        return "In progress"
     else:
-        return "No iniciada"
+        return "Not started"
 
 
-# === NODOS DE AGENTES ===
+# === AGENT NODES ===
 
 def supervisor_node(state: PYMESState) -> Dict[str, Any]:
-    """Nodo supervisor que decide qué agente usar usando handoffs."""
+    """Supervisor node that decides which agent to use using handoffs."""
     try:
-        logger.info("Supervisor analizando situación...")
+        logger.info("Supervisor analyzing situation...")
 
         business_info_status = get_business_info_status_from_state(state)
         research_status = get_research_status_from_state(state)
@@ -303,74 +368,82 @@ def supervisor_node(state: PYMESState) -> Dict[str, Any]:
         last_message = messages[-1] if messages else None
         user_message = last_message.content if isinstance(last_message, HumanMessage) else ""
 
-        # Lógica de decisión del supervisor (sin LLM para simplicidad)
-        logger.info(f"Estado info: {business_info_status}, investigación: {research_status}")
+        # Supervisor decision logic (without LLM for simplicity)
+        logger.info(f"Info status: {business_info_status}, research: {research_status}")
 
-        # Decisiones basadas en reglas claras
-        if business_info_status in ["No iniciada", "Faltante", "Parcial"]:
+        # Decision based on clear rules
+        if business_info_status in ["Not started", "Missing", "Partial"]:
             agent_target = "info_extractor"
-            task_desc = "Recopilar información básica del negocio que falta"
-        elif business_info_status == "Completa" and research_status == "No iniciada":
+            task_desc = "Collect basic business information that is missing"
+        elif business_info_status == "Complete" and research_status == "Not started":
             agent_target = "researcher"
-            task_desc = "Realizar investigación de mercado basada en la información del negocio"
+            task_desc = "Perform market research based on business information"
         else:
             agent_target = "consultant"
-            task_desc = "Proporcionar asesoramiento conversacional"
+            task_desc = "Provide conversational advice"
 
-        logger.info(f"Supervisor decidió: {agent_target} - {task_desc}")
+        logger.info(f"Supervisor decided: {agent_target} - {task_desc}")
 
-        # Usar Command para handoff
+        # Use Command for handoff
         return {
             "current_agent": agent_target,
             "last_handoff": task_desc,
-            "messages": [AIMessage(content=f"Transfiriendo a {agent_target}: {task_desc}")]
+            "messages": [AIMessage(content=f"Transferring to {agent_target}: {task_desc}")]
         }
 
     except Exception as e:
-        logger.error(f"Error en supervisor_node: {str(e)}")
-        # Fallback: ir al consultor si hay error
+        logger.error(f"Error in supervisor_node: {str(e)}")
+        # Fallback: go to consultant if there's an error
         return {
             "current_agent": "consultant",
-            "messages": [AIMessage(content="Error en supervisor, transfiriendo al consultor...")]
+            "messages": [AIMessage(content="Error in supervisor, transferring to consultant...")]
         }
 
 
 @tool
 def save_business_info(info: str):
-    """Guardar información del negocio extraída en memoria a largo plazo."""
+    """Save extracted business information in long-term memory."""
     try:
-        # Esta herramienta simula el guardado - en realidad se manejará en el nodo
-        logger.info(f"Guardando información del negocio: {info}")
-        return "Información guardada exitosamente en memoria a largo plazo"
+        # This tool simulates saving - in reality, it will be handled in the node
+        logger.info(f"Saving business information: {info}")
+        return "Business information saved successfully in long-term memory"
     except Exception as e:
-        logger.error(f"Error guardando información: {str(e)}")
-        return "Error guardando información"
+        logger.error(f"Error saving information: {str(e)}")
+        return "Error saving information"
 
 
-def info_extractor_agent_node(state: PYMESState) -> Dict[str, Any]:
-    """Agente especializado en extracción de información del negocio."""
+async def info_extractor_agent_node(state: PYMESState) -> Dict[str, Any]:
+    """Specialized agent for extracting business information using intelligent evaluator."""
     try:
-        logger.info("Agente extractor de información activado")
+        logger.info("🤖 info_extractor_agent_node activado")
+        
+        # Verificar estado inicial
+        initial_business_info = state.get("business_info", {})
+        logger.info(f"📊 Estado business_info INICIAL en agente: {initial_business_info}")
 
-        llm = ChatOpenAI(model=LLM_MODEL, temperature=0.1)
-
-        # Obtener información actual del negocio
-        business_info = state.get("business_info", {})
-        messages = state.get("messages", [])
-
-        # Extraer nueva información de los mensajes recientes
-        updated_info = extract_business_info_from_conversation(messages, state) or business_info
-
-        # Determinar qué información falta
+        # First, execute the intelligent evaluator to extract information
+        evaluator_result = await business_info_evaluator_node(state)
+        
+        # Get the updated information from the evaluator
+        updated_business_info = evaluator_result.get("business_info", {})
+        logger.info(f"📊 Estado business_info DESPUÉS del evaluador: {updated_business_info}")
+        
+        # Verificar si el agente recibió los cambios
+        if updated_business_info != initial_business_info:
+            logger.info("✅ AGENTE CONFIRMÓ QUE RECIBIÓ ESTADO ACTUALIZADO")
+        else:
+            logger.info("ℹ️ Agente no detectó cambios en el estado")
+        
+        # Determine what information is missing
         required_fields = ["nombre_empresa", "sector", "productos_servicios_principales", "ubicacion"]
-        missing_fields = [field for field in required_fields if not updated_info.get(field)]
+        missing_fields = [field for field in required_fields if not updated_business_info.get(field)]
 
-        # Generar pregunta específica o completar si ya tenemos todo
+        # Generate specific question or complete if we already have everything
         if missing_fields:
-            # Generar pregunta para el primer campo faltante
+            # Generate question for the first missing field
             field = missing_fields[0]
             field_questions = {
-                "nombre_empresa": "¿Cuál es el nombre de tu empresa o negocio?",
+                "nombre_empresa": "¡Hola! Para ayudarte mejor, ¿cuál es el nombre de tu empresa o negocio?",
                 "sector": "¿En qué sector o industria opera tu negocio? (por ejemplo: restaurantes, software, retail, etc.)",
                 "productos_servicios_principales": "¿Cuáles son los principales productos o servicios que ofreces?",
                 "ubicacion": "¿Dónde opera tu negocio? (ciudad, país, o si es online)"
@@ -380,70 +453,65 @@ def info_extractor_agent_node(state: PYMESState) -> Dict[str, Any]:
 
             return {
                 "messages": [AIMessage(content=question)],
-                "current_agent": "info_extractor",  # Permanecer en este agente
-                "business_info": updated_info,  # Guardar info actualizada
-                "stage": "info_gathering"
+                "business_info": updated_business_info,
+                "stage": "info_gathering",
+                "current_agent": "info_extractor"  # Keep in this agent
             }
         else:
-            # Información completa, transferir al investigador
-            logger.info("Información del negocio completa, transfiriendo al investigador")
-
-            # Guardar en memoria
-            memory_service = get_memory_service()
-            thread_id = get_thread_id_from_state(state)
-            memory_service.save_business_info(thread_id, updated_info)
+            # Complete information, transfer to researcher
+            logger.info("Business information complete, transferring to researcher")
 
             return {
                 "messages": [AIMessage(
                     content="¡Perfecto! He recopilado toda la información de tu negocio. Ahora voy a investigar oportunidades específicas para tu empresa.")],
-                "current_agent": "researcher",  # Handoff al investigador
-                "last_handoff": "Información completa, iniciar investigación de mercado",
-                "business_info": updated_info,
+                "current_agent": "researcher",  # Handoff to researcher
+                "last_handoff": "Complete information, start market research",
+                "business_info": updated_business_info,
                 "stage": "info_completed"
             }
 
     except Exception as e:
-        logger.error(f"Error en info_extractor_agent_node: {str(e)}")
+        logger.error(f"Error in info_extractor_agent_node: {str(e)}")
         return {"messages": [AIMessage(content="Hubo un error. ¿Podrías repetir tu información?")]}
 
 
 @tool
 def save_research_results(results: str):
-    """Guardar resultados de investigación en memoria a largo plazo."""
+    """Save research results in long-term memory."""
     try:
-        logger.info(f"Guardando resultados de investigación: {results[:100]}...")
-        return "Resultados de investigación guardados exitosamente"
+        logger.info(f"Saving research results: {results[:100]}...")
+        return "Research results saved successfully"
     except Exception as e:
-        logger.error(f"Error guardando investigación: {str(e)}")
-        return "Error guardando resultados"
+        logger.error(f"Error saving research: {str(e)}")
+        return "Error saving research results"
 
 
 def researcher_agent_node(state: PYMESState):
-    """Agente especializado en investigación de mercado."""
+    """Specialized agent for market research."""
     try:
-        logger.info("Agente investigador activado")
+        logger.info("Researcher agent activated")
 
         llm = ChatOpenAI(model=LLM_MODEL, temperature=0.1)
 
-        # Herramientas para el investigador
-        from app.graph.nodes import search  # Importar herramienta de búsqueda existente
+        # Tools for the researcher
+        from app.graph.nodes import search  # Import existing search tool
         researcher_tools = [search, transfer_to_consultant, transfer_to_info_extractor, save_research_results]
 
-        # Crear agente ReAct con información del negocio en el prompt
+        # Create ReAct agent with business information in the prompt
         business_info = state.get("business_info", {})
         enhanced_prompt = RESEARCHER_PROMPT
 
         if business_info:
-            business_context = f"\n\nINFORMACIÓN DEL NEGOCIO DISPONIBLE:\n{business_info}\n\nUsa esta información para generar investigación específica y relevante."
+            business_context = f"\n\nAVAILABLE BUSINESS INFORMATION:\n{business_info}\n\nUse this information to generate specific and relevant research."
             enhanced_prompt += business_context
 
-        # Crear agente ReAct
+        # Create ReAct agent
         agent = create_react_agent(llm, researcher_tools, state_modifier=enhanced_prompt)
 
-        # Ejecutar agente
+        # Execute agent
         result = agent.invoke(state)
 
-        # Guardar resultados de investigación si se generaron
+        # Save research results if generated
         messages = result["messages"]
         research_content = extract_research_from_messages(messages)
 
@@ -455,76 +523,96 @@ def researcher_agent_node(state: PYMESState):
             return {
                 "messages": result["messages"],
                 "context": research_content,
-                "web_search": "Investigación completada",
+                "web_search": "Research completed",
                 "stage": "research_completed"
             }
 
         return {"messages": result["messages"]}
 
     except Exception as e:
-        logger.error(f"Error en researcher_agent_node: {str(e)}")
-        return {"messages": [AIMessage(content="Hubo un error en la investigación. Intentemos de nuevo.")]}
+        logger.error(f"Error in researcher_agent_node: {str(e)}")
+        return {"messages": [AIMessage(content="There was an error in research. Let's try again.")]}
 
 
 def consultant_agent_node(state: PYMESState):
-    """Agente consultor conversacional (el chatbot original)."""
+    """Conversational consultant agent (original chatbot)."""
     try:
-        logger.info("Agente consultor conversacional activado")
+        logger.info("Conversational consultant agent activated")
 
         llm = ChatOpenAI(model=LLM_MODEL, temperature=0.1)
 
-        # Herramientas para el consultor
+        # Tools for the consultant
         from app.graph.nodes import search, search_documents
         consultant_tools = [search, search_documents, transfer_to_info_extractor, transfer_to_researcher]
 
-        # Crear agente ReAct
+        # Create ReAct agent
         agent = create_react_agent(llm, consultant_tools, state_modifier=CONSULTANT_PROMPT)
 
-        # Ejecutar agente
+        # Execute agent
         result = agent.invoke(state)
 
         return {"messages": result["messages"]}
 
     except Exception as e:
-        logger.error(f"Error en consultant_agent_node: {str(e)}")
-        return {"messages": [AIMessage(content="Hubo un error. ¿En qué puedo ayudarte?")]}
+        logger.error(f"Error in consultant_agent_node: {str(e)}")
+        return {"messages": [AIMessage(content="There was an error. How can I help you?")]}
 
 
-def human_feedback_node(state: PYMESState):
-    """Nodo de feedback humano mejorado para la arquitectura supervisor."""
+def human_feedback_node(state: PYMESState) -> Command:
+    """
+    Human feedback node for the supervisor architecture.
+    Based on the successful pattern of nodes.py
+    """
     try:
-        logger.info("Esperando feedback del usuario...")
+        logger.info("Waiting for user feedback...")
 
-        # Interrupt para esperar input del usuario
-        user_input = interrupt({
-            "message": "Esperando tu respuesta...",
-            "status": "waiting_for_input"
+        # Use the same pattern that works in nodes.py
+        user_input_from_interrupt = interrupt({
+            "answer": state.get("answer", "Esperando respuesta del asistente."),
+            "message": "Proporcione su respuesta:"
         })
 
-        logger.info(f"Feedback recibido: {user_input}")
+        logger.info(f"User feedback received: {user_input_from_interrupt}")
 
-        # Actualizar estado con el nuevo mensaje del usuario
-        return {
-            "messages": [HumanMessage(content=user_input)],
-            "input": user_input
+        # Update feedback history
+        updated_feedback_list = state.get("feedback", []) + [user_input_from_interrupt]
+
+        # Create user message for history
+        user_message_for_history = HumanMessage(content=user_input_from_interrupt)
+
+        # Update payload
+        update_payload = {
+            "messages": [user_message_for_history],
+            "feedback": updated_feedback_list,
+            "input": user_input_from_interrupt
         }
 
+        # Check if the user wants to end
+        if user_input_from_interrupt.strip().lower() in ["done", "thanks", "bye", "adios", "terminate", "exit"]:
+            logger.info(f"User ended conversation with: {user_input_from_interrupt}")
+            return Command(update=update_payload, goto=END)
+        else:
+            logger.info(f"User continues conversation with: {user_input_from_interrupt}")
+            # Go back to business evaluator and then to supervisor
+            return Command(update=update_payload, goto="business_evaluator")
+
     except Exception as e:
-        logger.error(f"Error en human_feedback_node: {str(e)}")
-        return {"messages": [HumanMessage(content="Error procesando entrada")]}
+        logger.error(f"Error in human_feedback_node: {str(e)}")
+        # In case of error, go back to supervisor
+        return Command(update={"messages": [HumanMessage(content="Error processing input")]}, goto="supervisor")
 
 
-# === FUNCIONES DE ENRUTAMIENTO ===
+# === ROUTING FUNCTIONS ===
 
 def route_after_supervisor(state: PYMESState) -> Literal[
     "info_extractor", "researcher", "consultant", "human_feedback"]:
-    """Enruta después del supervisor basado en la decisión de transferencia."""
-    # Verificar si hay un agente especificado en el estado
+    """Route after supervisor based on transfer decision."""
+    # Check if there's a specified agent in the state
     current_agent = state.get("current_agent")
     if current_agent in ["info_extractor", "researcher", "consultant"]:
         return current_agent
 
-    # Fallback: analizar mensajes para tool calls
+    # Fallback: analyze messages for tool calls
     messages = state.get("messages", [])
     last_message = messages[-1] if messages else None
 
@@ -539,48 +627,50 @@ def route_after_supervisor(state: PYMESState) -> Literal[
         elif tool_name == "transfer_to_consultant":
             return "consultant"
 
-    # Por defecto, ir a feedback humano
+    # Default: go to human feedback
     return "human_feedback"
 
 
 def route_after_agents(state: PYMESState) -> Literal["supervisor", "human_feedback"]:
-    """Enruta después de los agentes especializados."""
+    """Route after specialized agents."""
     messages = state.get("messages", [])
     last_message = messages[-1] if messages else None
 
-    # Si hay una transferencia pendiente, volver al supervisor
+    # If there's a pending transfer, go back to supervisor
     if isinstance(last_message, AIMessage) and last_message.tool_calls:
         tool_call = last_message.tool_calls[0]
         if tool_call["name"].startswith("transfer_to_"):
             return "supervisor"
 
-    # Si no hay transferencia, ir a feedback humano
+    # If no transfer, go to human feedback
     return "human_feedback"
 
 
 def create_supervisor_pymes_graph():
     """
-    Crea el grafo principal con arquitectura supervisor.
+    Create the main graph with supervisor architecture.
     """
     try:
-        logger.info("Creando grafo supervisor PYMES...")
+        logger.info("Creating supervisor PYMES graph...")
 
-        # Crear el grafo
+        # Create the graph
         workflow = StateGraph(PYMESState)
 
-        # === AGREGAR NODOS ===
+        # === ADD NODES ===
         workflow.add_node("supervisor", supervisor_node)
+        workflow.add_node("business_evaluator", business_info_evaluator_node)  # Intelligent evaluator node
         workflow.add_node("info_extractor", info_extractor_agent_node)
         workflow.add_node("researcher", researcher_agent_node)
         workflow.add_node("consultant", consultant_agent_node)
         workflow.add_node("human_feedback", human_feedback_node)
 
-        # === DEFINIR FLUJO ===
+        # === DEFINE FLOW ===
 
-        # Inicio -> Supervisor
-        workflow.add_edge(START, "supervisor")
+        # Start -> Business evaluator -> Supervisor
+        workflow.add_edge(START, "business_evaluator")
+        workflow.add_edge("business_evaluator", "supervisor")
 
-        # Supervisor -> Agentes especializados o feedback
+        # Supervisor -> Specialized agents or feedback
         workflow.add_conditional_edges(
             "supervisor",
             route_after_supervisor,
@@ -592,7 +682,7 @@ def create_supervisor_pymes_graph():
             }
         )
 
-        # Agentes -> Supervisor o feedback humano
+        # Agents -> Supervisor or human feedback
         workflow.add_conditional_edges(
             "info_extractor",
             route_after_agents,
@@ -620,10 +710,10 @@ def create_supervisor_pymes_graph():
             }
         )
 
-        # Feedback humano -> Supervisor (para nueva decisión)
-        workflow.add_edge("human_feedback", "supervisor")
+        # Human feedback uses Command to decide where to go
+        # No need for static edge because uses Command(goto=...)
 
-        # === COMPILAR ===
+        # === COMPILE ===
         from app.database.postgres import get_postgres_saver, get_postgres_store
 
         store = get_postgres_store()
@@ -634,15 +724,15 @@ def create_supervisor_pymes_graph():
             store=store
         )
 
-        logger.info("Grafo supervisor PYMES compilado exitosamente")
+        logger.info("Supervisor PYMES graph compiled successfully")
         return compiled_graph
 
     except Exception as e:
-        logger.error(f"Error creando grafo supervisor: {str(e)}")
+        logger.error(f"Error creating supervisor graph: {str(e)}")
         raise
 
 
-# Función de compatibilidad
+# Compatibility function
 def create_chat_graph():
-    """Función de compatibilidad que devuelve el nuevo grafo supervisor."""
+    """Compatibility function that returns the new supervisor graph."""
     return create_supervisor_pymes_graph()

@@ -43,7 +43,8 @@ def process_message(
             "configurable": {
                 "thread_id": thread_id,
                 "reset_thread": reset_thread
-            }
+            },
+            "recursion_limit": 50  # Aumentar límite de recursión
         }
 
         # Check if we're resuming from an interrupt
