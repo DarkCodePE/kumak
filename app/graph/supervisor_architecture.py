@@ -637,51 +637,39 @@ def human_feedback_node(state: PYMESState) -> Command:
     Human feedback node for the supervisor architecture.
     Based on the successful pattern from the reference code.
     """
-    try:
-        logger.info("🔄 human_feedback_node: Esperando entrada del usuario...")
+    logger.info("🔄 human_feedback_node: Esperando entrada del usuario...")
 
-        # Usar interrupt() siguiendo el patrón del código de referencia
-        user_input_from_interrupt = interrupt({
-            "answer": state.get("answer", "Esperando respuesta del asistente."),
-            "message": "Proporcione su respuesta:"
-        })
+    # Usar interrupt() siguiendo el patrón del código de referencia
+    # NO usar try-catch aquí porque interrupt() es el comportamiento esperado
+    user_input_from_interrupt = interrupt({
+        "answer": state.get("answer", "Esperando respuesta del asistente."),
+        "message": "Proporcione su respuesta:"
+    })
 
-        logger.info(f"🔄 human_feedback_node: Entrada recibida: {user_input_from_interrupt}")
+    logger.info(f"🔄 human_feedback_node: Entrada recibida: {user_input_from_interrupt}")
 
-        # Actualizar historial de feedback
-        updated_feedback_list = state.get("feedback", []) + [user_input_from_interrupt]
+    # Actualizar historial de feedback
+    updated_feedback_list = state.get("feedback", []) + [user_input_from_interrupt]
 
-        # Crear mensaje de usuario para el historial
-        user_message_for_history = HumanMessage(content=user_input_from_interrupt)
+    # Crear mensaje de usuario para el historial
+    user_message_for_history = HumanMessage(content=user_input_from_interrupt)
 
-        # Payload de actualización
-        update_payload = {
-            "messages": [user_message_for_history],
-            "feedback": updated_feedback_list,
-            "input": user_input_from_interrupt
-        }
+    # Payload de actualización
+    update_payload = {
+        "messages": [user_message_for_history],
+        "feedback": updated_feedback_list,
+        "input": user_input_from_interrupt
+    }
 
-        # Verificar si el usuario quiere terminar
-        termination_words = ["done", "thanks", "bye", "adios", "terminate", "exit", "gracias", "chau", "fin"]
-        if user_input_from_interrupt.strip().lower() in termination_words:
-            logger.info(f"🔄 human_feedback_node: Usuario terminó conversación: {user_input_from_interrupt}")
-            return Command(update=update_payload, goto=END)
-        else:
-            logger.info(f"🔄 human_feedback_node: Usuario continúa conversación: {user_input_from_interrupt}")
-            # Volver al business_evaluator para procesar la nueva entrada
-            return Command(update=update_payload, goto="business_evaluator")
-
-    except Exception as e:
-        logger.error(f"🔄 human_feedback_node: Error: {str(e)}")
-        # En caso de error, terminar la conversación
-        error_message = "Error procesando entrada. Conversación terminada."
-        return Command(
-            update={
-                "messages": [AIMessage(content=error_message)],
-                "answer": error_message
-            }, 
-            goto=END
-        )
+    # Verificar si el usuario quiere terminar
+    termination_words = ["done", "thanks", "bye", "adios", "terminate", "exit", "gracias", "chau", "fin"]
+    if user_input_from_interrupt.strip().lower() in termination_words:
+        logger.info(f"🔄 human_feedback_node: Usuario terminó conversación: {user_input_from_interrupt}")
+        return Command(update=update_payload, goto=END)
+    else:
+        logger.info(f"🔄 human_feedback_node: Usuario continúa conversación: {user_input_from_interrupt}")
+        # Volver al business_evaluator para procesar la nueva entrada
+        return Command(update=update_payload, goto="business_evaluator")
 
 
 # === ROUTING FUNCTIONS ===

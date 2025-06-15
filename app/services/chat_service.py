@@ -96,9 +96,21 @@ def process_message(
         # Get the current state after execution
         state = graph.get_state(config)
 
-        # If the next node to execute is human_feedback, we're in an interrupt
+        # Check if we're in an interrupt state
         is_interrupted = False
-        if state.next and any("human_feedback" in node for node in state.next):
+        interrupt_data = None
+        
+        # Check for interrupts in the state
+        if hasattr(state, 'tasks') and state.tasks:
+            for task in state.tasks:
+                if hasattr(task, 'interrupts') and task.interrupts:
+                    is_interrupted = True
+                    interrupt_data = task.interrupts[0] if task.interrupts else None
+                    logger.info(f"Graph interrupted with data: {interrupt_data}")
+                    break
+        
+        # Fallback: check if next node is human_feedback
+        if not is_interrupted and state.next and any("human_feedback" in node for node in state.next):
             is_interrupted = True
             logger.info(f"Graph interrupted at human_feedback for thread {thread_id}")
 
@@ -120,24 +132,50 @@ def process_message(
         logger.info(f"[Thread: {thread_id}] Latest state retrieved. Next nodes: {next_nodes}")
 
         # --- Extraer la respuesta final (usando final_state_values) ---
-        final_answer_content = "El asistente no generó una respuesta en este turno."
-        # Usar .get() en el diccionario final_state_values
-        all_messages: List[BaseMessage] = final_state_values.get("messages", [])
-        # ***********************
-        if all_messages:
-            # Search for the last AI message
-            for msg in reversed(all_messages):
-                if isinstance(msg, AIMessage):
-                    final_answer = msg.content
-                    logger.info(f"[Thread: {thread_id}] Found last AI message content.")
-                    break
-                # Handle other potential message formats
-                elif hasattr(msg, 'role') and msg.get('role') == 'ai':
-                    final_answer = msg.get('content', 'No content found')
-                    logger.info(f"[Thread: {thread_id}] Found last AI message from role.")
-                    break
-        else:
-            logger.warning(f"[Thread: {thread_id}] No messages found in final state values.")
+        final_answer = "El asistente no generó una respuesta en este turno."
+        
+        # Si hay una interrupción, usar los datos de la interrupción
+        if is_interrupted and interrupt_data:
+            try:
+                # interrupt_data es un objeto Interrupt de LangGraph
+                if hasattr(interrupt_data, 'value') and isinstance(interrupt_data.value, dict):
+                    interrupt_value = interrupt_data.value
+                    if 'answer' in interrupt_value:
+                        final_answer = interrupt_value['answer']
+                        logger.info(f"[Thread: {thread_id}] Using interrupt answer: {final_answer[:100]}...")
+                    else:
+                        logger.info(f"[Thread: {thread_id}] Interrupt value keys: {list(interrupt_value.keys())}")
+                elif isinstance(interrupt_data, dict) and 'answer' in interrupt_data:
+                    final_answer = interrupt_data['answer']
+                    logger.info(f"[Thread: {thread_id}] Using interrupt answer: {final_answer[:100]}...")
+                else:
+                    logger.info(f"[Thread: {thread_id}] Interrupt data format: {type(interrupt_data)}")
+            except Exception as e:
+                logger.error(f"[Thread: {thread_id}] Error extracting interrupt data: {str(e)}")
+        
+        # Si no hay datos de interrupción, buscar en los mensajes
+        if final_answer == "El asistente no generó una respuesta en este turno.":
+            # Usar .get() en el diccionario final_state_values
+            all_messages: List[BaseMessage] = final_state_values.get("messages", [])
+            # ***********************
+            if all_messages:
+                # Search for the last AI message that's not an error message
+                for msg in reversed(all_messages):
+                    if isinstance(msg, AIMessage):
+                        # Skip error messages from human_feedback_node
+                        if "Error procesando entrada" not in msg.content:
+                            final_answer = msg.content
+                            logger.info(f"[Thread: {thread_id}] Found last AI message content.")
+                            break
+                    # Handle other potential message formats
+                    elif hasattr(msg, 'role') and msg.get('role') == 'ai':
+                        content = msg.get('content', 'No content found')
+                        if "Error procesando entrada" not in content:
+                            final_answer = content
+                            logger.info(f"[Thread: {thread_id}] Found last AI message from role.")
+                            break
+            else:
+                logger.warning(f"[Thread: {thread_id}] No messages found in final state values.")
 
         # Return appropriate response based on whether we're interrupted
         return {
