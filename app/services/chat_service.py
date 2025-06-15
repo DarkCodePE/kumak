@@ -5,7 +5,7 @@ from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from langgraph.types import Command
 
 from app.database.postgres import get_postgres_saver, get_async_postgres_saver
-from app.graph.supervisor_architecture import create_supervisor_pymes_graph
+from app.graph.intelligent_supervisor import create_intelligent_supervisor_graph
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ def process_message(
 
         # Create the Supervisor PYMES graph
         logger.info(f"Creating Supervisor PYMES graph for thread {thread_id} (WhatsApp: {is_whatsapp})")
-        graph = create_supervisor_pymes_graph()
+        graph = create_intelligent_supervisor_graph()
         logger.info(f"Supervisor PYMES graph created successfully for thread {thread_id}")
 
         # Set up configuration with the thread_id and recursion limit

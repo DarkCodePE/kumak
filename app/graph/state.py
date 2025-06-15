@@ -18,7 +18,15 @@ class BusinessInfo(TypedDict, total=False):
     descripcion_negocio: str  # 'descripcion' renombrada para mayor claridad
     anos_operacion: Optional[int]
     num_empleados: Optional[int]
-
+    limitaciones_recursos: List[str]
+    obstaculos_crecimiento: List[str]
+    metas_financieras: List[str]
+    objetivos_principales: List[str]
+    expansion_deseada: List[str]
+    timeline_objetivo: Optional[str]
+    desafios_actuales: List[str]
+    recursos_necesarios: List[str]
+    riesgos_identificados: List[str]
 
 class GrowthGoals(TypedDict):
     """Objetivos de crecimiento del negocio."""
