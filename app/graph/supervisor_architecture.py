@@ -40,7 +40,7 @@ class BusinessInfoExtracted(BaseModel):
 
 # === NODOS SIGUIENDO EL PATRÓN DE REFERENCIA ===
 
-async def business_info_extraction_node(state: PYMESState) -> Dict[str, Any]:
+def business_info_extraction_node(state: PYMESState) -> Dict[str, Any]:
     """Extract and store important business information from the last message."""
     logger.info("🚀 business_info_extraction_node iniciado")
     
@@ -59,10 +59,32 @@ async def business_info_extraction_node(state: PYMESState) -> Dict[str, Any]:
     logger.info(f"📥 Estado business_info ANTES de extracción: {current_info}")
     logger.info(f"💬 Procesando mensaje: {last_message.content[:100]}...")
     
-    # Pasar thread_id al manager
-    updated_info = await business_info_manager.extract_and_store_business_info(
-        last_message, current_info, thread_id
-    )
+    # Ejecutar la función async de manera síncrona
+    import asyncio
+    try:
+        # Ejecutar la función async en el loop actual
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # Si ya hay un loop corriendo, crear una tarea
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    asyncio.run,
+                    business_info_manager.extract_and_store_business_info(
+                        last_message, current_info, thread_id
+                    )
+                )
+                updated_info = future.result()
+        else:
+            # Si no hay loop, usar asyncio.run
+            updated_info = asyncio.run(
+                business_info_manager.extract_and_store_business_info(
+                    last_message, current_info, thread_id
+                )
+            )
+    except Exception as async_error:
+        logger.error(f"Error ejecutando función async: {async_error}")
+        return {}
     
     logger.info(f"📤 Estado business_info DESPUÉS de extracción: {updated_info}")
     
@@ -91,7 +113,7 @@ def business_info_injection_node(state: PYMESState) -> Dict[str, Any]:
 
 # === FUNCIONES AUXILIARES ===
 
-async def business_info_evaluator_node(state: PYMESState) -> Dict[str, Any]:
+def business_info_evaluator_node(state: PYMESState) -> Dict[str, Any]:
     """
     Simple business info extraction node following the reference pattern.
     Replaces the complex evaluator with the simple extraction pattern.
@@ -103,17 +125,57 @@ async def business_info_evaluator_node(state: PYMESState) -> Dict[str, Any]:
         current_business_info = state.get("business_info", {})
         logger.info(f"📊 Estado business_info al INICIO del evaluador: {current_business_info}")
         
-        # Use the extraction node pattern from the reference code
-        result = await business_info_extraction_node(state)
+        # Obtener thread_id del estado
+        thread_id = get_thread_id_from_state(state)
+        logger.info(f"🔗 Thread ID obtenido: {thread_id}")
+
+        if not state.get("messages"):
+            logger.warning("⚠️ No hay mensajes en el estado")
+            return {}
+
+        # Usar el BusinessInfoManager directamente (sin async)
+        business_info_manager = get_business_info_manager()
+        last_message = state["messages"][-1]
         
-        # Verificar el resultado
-        new_business_info = result.get("business_info", {})
-        logger.info(f"📊 Estado business_info al FINAL del evaluador: {new_business_info}")
+        logger.info(f"💬 Procesando mensaje: {last_message.content[:100]}...")
         
-        if new_business_info != current_business_info:
+        # Llamar al método síncrono del manager
+        import asyncio
+        try:
+            # Ejecutar la función async en el loop actual
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # Si ya hay un loop corriendo, crear una tarea
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(
+                        asyncio.run,
+                        business_info_manager.extract_and_store_business_info(
+                            last_message, current_business_info, thread_id
+                        )
+                    )
+                    updated_info = future.result()
+            else:
+                # Si no hay loop, usar asyncio.run
+                updated_info = asyncio.run(
+                    business_info_manager.extract_and_store_business_info(
+                        last_message, current_business_info, thread_id
+                    )
+                )
+        except Exception as async_error:
+            logger.error(f"Error ejecutando función async: {async_error}")
+            return {}
+        
+        logger.info(f"📤 Estado business_info DESPUÉS de extracción: {updated_info}")
+        
+        # Verificar si hubo cambios
+        if updated_info != current_business_info:
             logger.info("✅ EVALUADOR CONFIRMÓ CAMBIOS EN BUSINESS_INFO")
         else:
             logger.info("ℹ️ Evaluador no detectó cambios")
+        
+        result = {"business_info": updated_info}
+        logger.info(f"🔄 Devolviendo al grafo: {result}")
         
         return result
         
@@ -412,7 +474,7 @@ def save_business_info(info: str):
         return "Error saving information"
 
 
-async def info_extractor_agent_node(state: PYMESState) -> Dict[str, Any]:
+def info_extractor_agent_node(state: PYMESState) -> Dict[str, Any]:
     """Specialized agent for extracting business information using intelligent evaluator."""
     try:
         logger.info("🤖 info_extractor_agent_node activado")
@@ -422,7 +484,7 @@ async def info_extractor_agent_node(state: PYMESState) -> Dict[str, Any]:
         logger.info(f"📊 Estado business_info INICIAL en agente: {initial_business_info}")
 
         # First, execute the intelligent evaluator to extract information
-        evaluator_result = await business_info_evaluator_node(state)
+        evaluator_result = business_info_evaluator_node(state)
         
         # Get the updated information from the evaluator
         updated_business_info = evaluator_result.get("business_info", {})
