@@ -51,7 +51,7 @@ class BusinessInfoManager:
         - sector: Sector o industria
         - productos_servicios_principales: Productos o servicios principales (como string separado por comas)
         - desafios_principales: Desafíos o problemas del negocio (como string separado por comas)
-        - ubicacion: Ubicación de operación
+        - ubicacion: Ubicación de operación (local físico, online, ambos, ciudad, país, etc.)
         - descripcion_negocio: Descripción del negocio
         - anos_operacion: Años de operación (como string)
         - num_empleados: Número de empleados (como string)
@@ -62,6 +62,7 @@ class BusinessInfoManager:
         3. Si no hay información empresarial factual, marca como no importante
         4. Fusiona con información existente sin duplicar
         5. Devuelve valores como strings simples
+        6. IMPORTANTE: Detecta información de ubicación/operación incluso en respuestas cortas
 
         Información actual: {current_info}
 
@@ -81,6 +82,38 @@ class BusinessInfoManager:
             "extracted_info": {{
                 "productos_servicios_principales": "Productos de belleza",
                 "num_empleados": "5"
+            }}
+        }}
+
+        Input: "Tengo un local físico"
+        Output: {{
+            "is_important": true,
+            "extracted_info": {{
+                "ubicacion": "Local físico"
+            }}
+        }}
+
+        Input: "Opero completamente online"
+        Output: {{
+            "is_important": true,
+            "extracted_info": {{
+                "ubicacion": "Online"
+            }}
+        }}
+
+        Input: "Tengo local físico y también vendo online"
+        Output: {{
+            "is_important": true,
+            "extracted_info": {{
+                "ubicacion": "Local físico y online"
+            }}
+        }}
+
+        Input: "Restaurante"
+        Output: {{
+            "is_important": true,
+            "extracted_info": {{
+                "sector": "Restaurante"
             }}
         }}
 

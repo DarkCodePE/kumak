@@ -503,6 +503,10 @@ def info_extractor_agent_node(state: PYMESState) -> Dict[str, Any]:
         # Determine what information is missing
         required_fields = ["nombre_empresa", "sector", "productos_servicios_principales", "ubicacion"]
         missing_fields = [field for field in required_fields if not updated_business_info.get(field)]
+        
+        logger.info(f"📋 Campos requeridos: {required_fields}")
+        logger.info(f"📋 Campos faltantes: {missing_fields}")
+        logger.info(f"📋 Información actual: {updated_business_info}")
 
         # Generate specific question or complete if we already have everything
         if missing_fields:
@@ -537,7 +541,18 @@ def info_extractor_agent_node(state: PYMESState) -> Dict[str, Any]:
             # Complete information, transfer to researcher
             logger.info("Business information complete, transferring to researcher")
             
-            completion_message = "¡Perfecto! He recopilado toda la información de tu negocio. Ahora voy a investigar oportunidades específicas para tu empresa."
+            # Crear mensaje personalizado con la información recopilada
+            empresa = updated_business_info.get("nombre_empresa", "tu empresa")
+            sector = updated_business_info.get("sector", "")
+            productos = updated_business_info.get("productos_servicios_principales", "")
+            ubicacion = updated_business_info.get("ubicacion", "")
+            
+            completion_message = f"¡Excelente! 🎉 He recopilado toda la información de {empresa}:\n\n"
+            completion_message += f"🏢 Empresa: {empresa}\n"
+            completion_message += f"🏭 Sector: {sector}\n"
+            completion_message += f"📦 Productos/Servicios: {productos}\n"
+            completion_message += f"📍 Ubicación: {ubicacion}\n\n"
+            completion_message += "Ahora voy a investigar oportunidades específicas de crecimiento para tu negocio. ¡Un momento por favor! 🔍"
 
             return {
                 "messages": [AIMessage(content=completion_message)],
@@ -588,7 +603,7 @@ def researcher_agent_node(state: PYMESState):
             enhanced_prompt += business_context
 
         # Create ReAct agent
-        agent = create_react_agent(llm, researcher_tools, state_modifier=enhanced_prompt)
+        agent = create_react_agent(llm, researcher_tools, prompt=enhanced_prompt)
 
         # Execute agent
         result = agent.invoke(state)
@@ -628,7 +643,7 @@ def consultant_agent_node(state: PYMESState):
         consultant_tools = [search, search_documents, transfer_to_info_extractor, transfer_to_researcher]
 
         # Create ReAct agent
-        agent = create_react_agent(llm, consultant_tools, state_modifier=CONSULTANT_PROMPT)
+        agent = create_react_agent(llm, consultant_tools, prompt=CONSULTANT_PROMPT)
 
         # Execute agent
         result = agent.invoke(state)
