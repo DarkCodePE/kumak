@@ -616,7 +616,26 @@ def researcher_agent_node(state: PYMESState):
             try:
                 memory_service = get_memory_service()
                 thread_id = get_thread_id_from_state(state)
-                memory_service.save_research_results(thread_id, {"content": research_content, "timestamp": time.time()})
+                # Usar asyncio.create_task para ejecutar la función async sin await
+                import asyncio
+                try:
+                    # Intentar ejecutar en el loop actual
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # Si hay un loop corriendo, crear una tarea
+                        asyncio.create_task(memory_service.save_research_results(
+                            thread_id, {"content": research_content, "timestamp": time.time()}
+                        ))
+                    else:
+                        # Si no hay loop, ejecutar directamente
+                        asyncio.run(memory_service.save_research_results(
+                            thread_id, {"content": research_content, "timestamp": time.time()}
+                        ))
+                except RuntimeError:
+                    # Si no se puede obtener el loop, crear uno nuevo
+                    asyncio.run(memory_service.save_research_results(
+                        thread_id, {"content": research_content, "timestamp": time.time()}
+                    ))
                 logger.info(f"Resultados de investigación guardados para {thread_id}")
             except Exception as e:
                 logger.warning(f"Error guardando resultados de investigación: {str(e)}")
