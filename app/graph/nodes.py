@@ -53,20 +53,36 @@ def search(query: str) -> str:
 
         # Formatear la salida como un string legible
         formatted_output = f"Resultados de la búsqueda web para '{query}':\n\n"
-        # results es una lista de diccionarios
-        for i, result in enumerate(results):
-            if isinstance(result, dict) and 'content' in result and 'url' in result:
-                formatted_output += f"Resultado {i + 1}:\n"
-                formatted_output += f"  Contenido: {result.get('content', 'N/A')}\n"  # Usar .get para seguridad
-                formatted_output += f"  Fuente URL: {result.get('url', 'N/A')}\n\n"
-                # Opcional: incluir 'title' si es útil:
-                # title = result.get('title')
-                # if title: formatted_output += f"  Título: {title}\n"
-            else:
-                logger.warning(f"Formato de resultado inesperado de Tavily: {result}")
-                formatted_output += f"Resultado {i + 1}: (Formato de datos inesperado)\n\n"
-
-        logger.info(f"Tavily devolvió {len(results)} resultados.")
+        
+        # Verificar si results es una lista o un string
+        if isinstance(results, str):
+            # Si Tavily devuelve un string directamente, usarlo tal como está
+            formatted_output += results
+            logger.info(f"Tavily devolvió resultado como string de {len(results)} caracteres.")
+        elif isinstance(results, list):
+            # results es una lista de diccionarios
+            for i, result in enumerate(results):
+                if isinstance(result, dict) and 'content' in result and 'url' in result:
+                    formatted_output += f"Resultado {i + 1}:\n"
+                    formatted_output += f"  Contenido: {result.get('content', 'N/A')}\n"
+                    formatted_output += f"  Fuente URL: {result.get('url', 'N/A')}\n\n"
+                    # Opcional: incluir 'title' si es útil:
+                    title = result.get('title')
+                    if title: 
+                        formatted_output += f"  Título: {title}\n"
+                elif isinstance(result, dict):
+                    # Manejar otros formatos de diccionario
+                    formatted_output += f"Resultado {i + 1}:\n"
+                    for key, value in result.items():
+                        formatted_output += f"  {key}: {value}\n"
+                    formatted_output += "\n"
+                else:
+                    logger.warning(f"Formato de resultado inesperado de Tavily: {type(result)} - {result}")
+                    formatted_output += f"Resultado {i + 1}: {str(result)}\n\n"
+            logger.info(f"Tavily devolvió {len(results)} resultados.")
+        else:
+            logger.warning(f"Formato de resultados inesperado de Tavily: {type(results)} - {results}")
+            formatted_output += f"Resultados: {str(results)}"
         return formatted_output.strip()
 
     except Exception as e:

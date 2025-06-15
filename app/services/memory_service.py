@@ -37,6 +37,7 @@ class MemoryService:
     def _ensure_collections_exist(self):
         """Asegurar que las colecciones de Qdrant existan."""
         try:
+            # Verificar si Qdrant está disponible
             collections = self.qdrant_client.get_collections().collections
             collection_names = [col.name for col in collections]
             
@@ -50,10 +51,14 @@ class MemoryService:
                         )
                     )
                     logger.info(f"Colección Qdrant creada: {collection_name}")
+            
+            logger.info("Qdrant conectado y colecciones verificadas")
+            self.qdrant_available = True
                     
         except Exception as e:
-            logger.error(f"Error creando colecciones Qdrant: {str(e)}")
-            raise
+            logger.warning(f"Qdrant no disponible, usando solo PostgreSQL: {str(e)}")
+            self.qdrant_available = False
+            # No hacer raise para que el sistema funcione sin Qdrant
     
     @with_retry()
     async def save_business_info(self, thread_id: str, business_info: Dict[str, Any]) -> bool:
@@ -90,30 +95,41 @@ class MemoryService:
                 "type": "business_info"
             }
             
-            # Guardar en Qdrant
-            point_id = f"business_{thread_id}"
-            self.qdrant_client.upsert(
-                collection_name=self.business_collection,
-                points=[models.PointStruct(
-                    id=point_id,
-                    vector=vector,
-                    payload={
-                        "content": business_text,
-                        "data": business_info,
-                        "metadata": metadata
-                    }
-                )]
-            )
+            # Guardar en Qdrant solo si está disponible
+            if self.qdrant_available:
+                try:
+                    point_id = f"business_{thread_id}"
+                    self.qdrant_client.upsert(
+                        collection_name=self.business_collection,
+                        points=[models.PointStruct(
+                            id=point_id,
+                            vector=vector,
+                            payload={
+                                "content": business_text,
+                                "data": business_info,
+                                "metadata": metadata
+                            }
+                        )]
+                    )
+                    logger.info(f"Información guardada en Qdrant para {thread_id}")
+                except Exception as e:
+                    logger.warning(f"Error guardando en Qdrant, continuando con PostgreSQL: {str(e)}")
+                    self.qdrant_available = False
             
             # También guardar en PostgresStore para checkpoint
-            business_doc = Document(
-                page_content=json.dumps(business_info, ensure_ascii=False),
-                metadata=metadata
-            )
-            namespace = f"business_info:{thread_id}"
-            self.store.put(namespace, f"info_{thread_id}", business_doc)
+            try:
+                business_doc = Document(
+                    page_content=json.dumps(business_info, ensure_ascii=False),
+                    metadata=metadata
+                )
+                namespace = f"business_info:{thread_id}"
+                self.store.put(namespace, f"info_{thread_id}", business_doc)
+                logger.info(f"Información guardada en PostgreSQL para {thread_id}")
+            except Exception as e:
+                logger.warning(f"Error guardando en PostgreSQL: {str(e)}")
+                # Continuar sin guardar en PostgreSQL
             
-            logger.info(f"Información del negocio guardada en Qdrant y PostgreSQL para {thread_id}")
+            logger.info(f"Información del negocio guardada para {thread_id}")
             return True
             
         except Exception as e:
@@ -158,32 +174,36 @@ class MemoryService:
         try:
             logger.info(f"Cargando información del negocio para thread {thread_id}")
             
-            # Buscar en Qdrant por ID específico
-            point_id = f"business_{thread_id}"
-            
-            try:
-                points = self.qdrant_client.retrieve(
-                    collection_name=self.business_collection,
-                    ids=[point_id]
-                )
-                
-                if points:
-                    business_info = points[0].payload.get("data", {})
-                    logger.info(f"Información cargada desde Qdrant para {thread_id}")
-                    return business_info
+            # Buscar en Qdrant por ID específico solo si está disponible
+            if self.qdrant_available:
+                try:
+                    point_id = f"business_{thread_id}"
+                    points = self.qdrant_client.retrieve(
+                        collection_name=self.business_collection,
+                        ids=[point_id]
+                    )
                     
-            except Exception as e:
-                logger.warning(f"No se encontró en Qdrant, intentando PostgreSQL: {str(e)}")
+                    if points:
+                        business_info = points[0].payload.get("data", {})
+                        logger.info(f"Información cargada desde Qdrant para {thread_id}")
+                        return business_info
+                        
+                except Exception as e:
+                    logger.warning(f"Error en Qdrant, usando PostgreSQL: {str(e)}")
+                    self.qdrant_available = False
             
             # Fallback a PostgresStore
-            namespace = f"business_info:{thread_id}"
-            documents = self.store.search(namespace)
-            
-            if documents:
-                doc = documents[0]
-                business_info = json.loads(doc.page_content)
-                logger.info(f"Información cargada desde PostgreSQL para {thread_id}")
-                return business_info
+            try:
+                namespace = f"business_info:{thread_id}"
+                documents = self.store.search(namespace)
+                
+                if documents:
+                    doc = documents[0]
+                    business_info = json.loads(doc.page_content)
+                    logger.info(f"Información cargada desde PostgreSQL para {thread_id}")
+                    return business_info
+            except Exception as e:
+                logger.warning(f"Error cargando desde PostgreSQL: {str(e)}")
             
             return None
             

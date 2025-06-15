@@ -613,9 +613,14 @@ def researcher_agent_node(state: PYMESState):
         research_content = extract_research_from_messages(messages)
 
         if research_content:
-            memory_service = get_memory_service()
-            thread_id = get_thread_id_from_state(state)
-            memory_service.save_research_results(thread_id, {"content": research_content, "timestamp": time.time()})
+            try:
+                memory_service = get_memory_service()
+                thread_id = get_thread_id_from_state(state)
+                memory_service.save_research_results(thread_id, {"content": research_content, "timestamp": time.time()})
+                logger.info(f"Resultados de investigación guardados para {thread_id}")
+            except Exception as e:
+                logger.warning(f"Error guardando resultados de investigación: {str(e)}")
+                # Continuar sin guardar en memoria
 
             return {
                 "messages": result["messages"],
