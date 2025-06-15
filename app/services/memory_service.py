@@ -195,13 +195,15 @@ class MemoryService:
             # Fallback a PostgresStore
             try:
                 namespace = f"business_info:{thread_id}"
-                documents = self.store.search(namespace)
+                key = f"info_{thread_id}"
+                documents = self.store.get(namespace, [key])
                 
-                if documents:
+                if documents and len(documents) > 0:
                     doc = documents[0]
-                    business_info = json.loads(doc.page_content)
-                    logger.info(f"Información cargada desde PostgreSQL para {thread_id}")
-                    return business_info
+                    if doc and doc.page_content:
+                        business_info = json.loads(doc.page_content)
+                        logger.info(f"Información cargada desde PostgreSQL para {thread_id}")
+                        return business_info
             except Exception as e:
                 logger.warning(f"Error cargando desde PostgreSQL: {str(e)}")
             

@@ -117,25 +117,44 @@ def business_info_injection_node(state: PYMESState) -> Dict[str, Any]:
 
 def business_info_evaluator_node(state: PYMESState) -> Dict[str, Any]:
     """
-    Simple business info extraction node following the reference pattern.
-    Replaces the complex evaluator with the simple extraction pattern.
+    Enhanced business info extraction node that loads previous context.
+    Loads existing business information from memory and merges with new extractions.
     """
     try:
         logger.info("🔍 business_info_evaluator_node activado")
         
-        # Obtener estado actual para logging
-        current_business_info = state.get("business_info", {})
-        logger.info(f"📊 Estado business_info al INICIO del evaluador: {current_business_info}")
-        
         # Obtener thread_id del estado
         thread_id = get_thread_id_from_state(state)
         logger.info(f"🔗 Thread ID obtenido: {thread_id}")
+        
+        # PASO 1: Cargar información empresarial previa desde memoria
+        memory_service = get_memory_service()
+        previous_business_info = {}
+        
+        try:
+            # Intentar cargar información previa desde memoria a largo plazo
+            previous_business_info = memory_service.load_business_info(thread_id) or {}
+            if previous_business_info:
+                logger.info(f"📚 Información previa cargada desde memoria: {previous_business_info}")
+            else:
+                logger.info("📚 No se encontró información previa en memoria")
+        except Exception as e:
+            logger.warning(f"⚠️ Error cargando información previa: {str(e)}")
+        
+        # PASO 2: Obtener estado actual del grafo
+        current_business_info = state.get("business_info", {})
+        logger.info(f"📊 Estado business_info del grafo: {current_business_info}")
+        
+        # PASO 3: Fusionar información previa con estado actual
+        merged_business_info = {**previous_business_info, **current_business_info}
+        logger.info(f"🔗 Información fusionada (previa + actual): {merged_business_info}")
 
         if not state.get("messages"):
             logger.warning("⚠️ No hay mensajes en el estado")
-            return {}
+            # Devolver la información fusionada aunque no haya mensajes nuevos
+            return {"business_info": merged_business_info}
 
-        # Usar el BusinessInfoManager directamente (sin async)
+        # PASO 4: Procesar nuevo mensaje con contexto completo
         business_info_manager = get_business_info_manager()
         last_message = state["messages"][-1]
         
@@ -154,7 +173,7 @@ def business_info_evaluator_node(state: PYMESState) -> Dict[str, Any]:
                     future = executor.submit(
                         asyncio.run,
                         business_info_manager.extract_and_store_business_info(
-                            last_message, current_business_info, thread_id
+                            last_message, merged_business_info, thread_id
                         )
                     )
                     updated_info = future.result()
@@ -162,18 +181,18 @@ def business_info_evaluator_node(state: PYMESState) -> Dict[str, Any]:
                 # No hay loop corriendo, usar asyncio.run directamente
                 updated_info = asyncio.run(
                     business_info_manager.extract_and_store_business_info(
-                        last_message, current_business_info, thread_id
+                        last_message, merged_business_info, thread_id
                     )
                 )
         except Exception as async_error:
             logger.error(f"Error ejecutando función async: {async_error}")
-            # En caso de error, devolver la información actual sin cambios
-            updated_info = current_business_info
+            # En caso de error, devolver la información fusionada sin cambios
+            updated_info = merged_business_info
         
         logger.info(f"📤 Estado business_info DESPUÉS de extracción: {updated_info}")
         
         # Verificar si hubo cambios
-        if updated_info != current_business_info:
+        if updated_info != merged_business_info:
             logger.info("✅ EVALUADOR CONFIRMÓ CAMBIOS EN BUSINESS_INFO")
         else:
             logger.info("ℹ️ Evaluador no detectó cambios")
@@ -686,10 +705,22 @@ def human_feedback_node(state: PYMESState) -> Command:
     """
     logger.info("🔄 human_feedback_node: Esperando entrada del usuario...")
 
+    # Obtener la respuesta más reciente del último mensaje AI
+    messages = state.get("messages", [])
+    latest_answer = "Esperando respuesta del asistente."
+    
+    # Buscar el último mensaje AI (más reciente)
+    for message in reversed(messages):
+        if isinstance(message, AIMessage):
+            latest_answer = message.content
+            break
+    
+    logger.info(f"🔄 human_feedback_node: Usando respuesta más reciente: {latest_answer[:100]}...")
+
     # Usar interrupt() siguiendo el patrón del código de referencia
     # NO usar try-catch aquí porque interrupt() es el comportamiento esperado
     user_input_from_interrupt = interrupt({
-        "answer": state.get("answer", "Esperando respuesta del asistente."),
+        "answer": latest_answer,  # Usar la respuesta más reciente, no el estado cached
         "message": "Proporcione su respuesta:"
     })
 
