@@ -38,13 +38,13 @@ def process_message(
         graph = create_supervisor_pymes_graph()
         logger.info(f"Supervisor PYMES graph created successfully for thread {thread_id}")
 
-        # Set up configuration with the thread_id
+        # Set up configuration with the thread_id and recursion limit
         config = {
             "configurable": {
                 "thread_id": thread_id,
                 "reset_thread": reset_thread
             },
-            "recursion_limit": 50  # Aumentar límite de recursión
+            "recursion_limit": 100  # Aumentar límite de recursión para evitar errores
         }
 
         # Check if we're resuming from an interrupt

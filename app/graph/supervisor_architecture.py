@@ -59,13 +59,14 @@ def business_info_extraction_node(state: PYMESState) -> Dict[str, Any]:
     logger.info(f"📥 Estado business_info ANTES de extracción: {current_info}")
     logger.info(f"💬 Procesando mensaje: {last_message.content[:100]}...")
     
-    # Ejecutar la función async de manera síncrona
+    # Ejecutar función async de manera robusta
     import asyncio
     try:
-        # Ejecutar la función async en el loop actual
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # Si ya hay un loop corriendo, crear una tarea
+        # Intentar ejecutar la función async
+        try:
+            # Primero intentar obtener el loop actual
+            loop = asyncio.get_running_loop()
+            # Si hay un loop corriendo, usar ThreadPoolExecutor
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 future = executor.submit(
@@ -75,8 +76,8 @@ def business_info_extraction_node(state: PYMESState) -> Dict[str, Any]:
                     )
                 )
                 updated_info = future.result()
-        else:
-            # Si no hay loop, usar asyncio.run
+        except RuntimeError:
+            # No hay loop corriendo, usar asyncio.run directamente
             updated_info = asyncio.run(
                 business_info_manager.extract_and_store_business_info(
                     last_message, current_info, thread_id
@@ -84,7 +85,8 @@ def business_info_extraction_node(state: PYMESState) -> Dict[str, Any]:
             )
     except Exception as async_error:
         logger.error(f"Error ejecutando función async: {async_error}")
-        return {}
+        # En caso de error, devolver la información actual sin cambios
+        updated_info = current_info
     
     logger.info(f"📤 Estado business_info DESPUÉS de extracción: {updated_info}")
     
@@ -139,13 +141,14 @@ def business_info_evaluator_node(state: PYMESState) -> Dict[str, Any]:
         
         logger.info(f"💬 Procesando mensaje: {last_message.content[:100]}...")
         
-        # Llamar al método síncrono del manager
+        # Ejecutar función async de manera robusta
         import asyncio
         try:
-            # Ejecutar la función async en el loop actual
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # Si ya hay un loop corriendo, crear una tarea
+            # Intentar ejecutar la función async
+            try:
+                # Primero intentar obtener el loop actual
+                loop = asyncio.get_running_loop()
+                # Si hay un loop corriendo, usar ThreadPoolExecutor
                 import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(
@@ -155,8 +158,8 @@ def business_info_evaluator_node(state: PYMESState) -> Dict[str, Any]:
                         )
                     )
                     updated_info = future.result()
-            else:
-                # Si no hay loop, usar asyncio.run
+            except RuntimeError:
+                # No hay loop corriendo, usar asyncio.run directamente
                 updated_info = asyncio.run(
                     business_info_manager.extract_and_store_business_info(
                         last_message, current_business_info, thread_id
@@ -164,7 +167,8 @@ def business_info_evaluator_node(state: PYMESState) -> Dict[str, Any]:
                 )
         except Exception as async_error:
             logger.error(f"Error ejecutando función async: {async_error}")
-            return {}
+            # En caso de error, devolver la información actual sin cambios
+            updated_info = current_business_info
         
         logger.info(f"📤 Estado business_info DESPUÉS de extracción: {updated_info}")
         
@@ -513,28 +517,36 @@ def info_extractor_agent_node(state: PYMESState) -> Dict[str, Any]:
 
             question = field_questions.get(field, "¿Podrías proporcionar más información sobre tu negocio?")
 
+            # IMPORTANTE: Devolver directamente la respuesta sin redirigir a human_feedback
+            # Esto evita el bucle infinito
             return {
                 "messages": [AIMessage(content=question)],
                 "business_info": updated_business_info,
-                "stage": "info_gathering",
-                "current_agent": "info_extractor"  # Keep in this agent
+                "answer": question,  # Agregar answer para compatibilidad
+                "stage": "info_gathering"
             }
         else:
             # Complete information, transfer to researcher
             logger.info("Business information complete, transferring to researcher")
+            
+            completion_message = "¡Perfecto! He recopilado toda la información de tu negocio. Ahora voy a investigar oportunidades específicas para tu empresa."
 
             return {
-                "messages": [AIMessage(
-                    content="¡Perfecto! He recopilado toda la información de tu negocio. Ahora voy a investigar oportunidades específicas para tu empresa.")],
+                "messages": [AIMessage(content=completion_message)],
                 "current_agent": "researcher",  # Handoff to researcher
                 "last_handoff": "Complete information, start market research",
                 "business_info": updated_business_info,
+                "answer": completion_message,  # Agregar answer para compatibilidad
                 "stage": "info_completed"
             }
 
     except Exception as e:
         logger.error(f"Error in info_extractor_agent_node: {str(e)}")
-        return {"messages": [AIMessage(content="Hubo un error. ¿Podrías repetir tu información?")]}
+        error_message = "Hubo un error. ¿Podrías repetir tu información?"
+        return {
+            "messages": [AIMessage(content=error_message)],
+            "answer": error_message
+        }
 
 
 @tool
@@ -623,45 +635,53 @@ def consultant_agent_node(state: PYMESState):
 def human_feedback_node(state: PYMESState) -> Command:
     """
     Human feedback node for the supervisor architecture.
-    Based on the successful pattern of nodes.py
+    Based on the successful pattern from the reference code.
     """
     try:
-        logger.info("Waiting for user feedback...")
+        logger.info("🔄 human_feedback_node: Esperando entrada del usuario...")
 
-        # Use the same pattern that works in nodes.py
+        # Usar interrupt() siguiendo el patrón del código de referencia
         user_input_from_interrupt = interrupt({
             "answer": state.get("answer", "Esperando respuesta del asistente."),
             "message": "Proporcione su respuesta:"
         })
 
-        logger.info(f"User feedback received: {user_input_from_interrupt}")
+        logger.info(f"🔄 human_feedback_node: Entrada recibida: {user_input_from_interrupt}")
 
-        # Update feedback history
+        # Actualizar historial de feedback
         updated_feedback_list = state.get("feedback", []) + [user_input_from_interrupt]
 
-        # Create user message for history
+        # Crear mensaje de usuario para el historial
         user_message_for_history = HumanMessage(content=user_input_from_interrupt)
 
-        # Update payload
+        # Payload de actualización
         update_payload = {
             "messages": [user_message_for_history],
             "feedback": updated_feedback_list,
             "input": user_input_from_interrupt
         }
 
-        # Check if the user wants to end
-        if user_input_from_interrupt.strip().lower() in ["done", "thanks", "bye", "adios", "terminate", "exit"]:
-            logger.info(f"User ended conversation with: {user_input_from_interrupt}")
+        # Verificar si el usuario quiere terminar
+        termination_words = ["done", "thanks", "bye", "adios", "terminate", "exit", "gracias", "chau", "fin"]
+        if user_input_from_interrupt.strip().lower() in termination_words:
+            logger.info(f"🔄 human_feedback_node: Usuario terminó conversación: {user_input_from_interrupt}")
             return Command(update=update_payload, goto=END)
         else:
-            logger.info(f"User continues conversation with: {user_input_from_interrupt}")
-            # Go back to business evaluator and then to supervisor
+            logger.info(f"🔄 human_feedback_node: Usuario continúa conversación: {user_input_from_interrupt}")
+            # Volver al business_evaluator para procesar la nueva entrada
             return Command(update=update_payload, goto="business_evaluator")
 
     except Exception as e:
-        logger.error(f"Error in human_feedback_node: {str(e)}")
-        # In case of error, go back to supervisor
-        return Command(update={"messages": [HumanMessage(content="Error processing input")]}, goto="supervisor")
+        logger.error(f"🔄 human_feedback_node: Error: {str(e)}")
+        # En caso de error, terminar la conversación
+        error_message = "Error procesando entrada. Conversación terminada."
+        return Command(
+            update={
+                "messages": [AIMessage(content=error_message)],
+                "answer": error_message
+            }, 
+            goto=END
+        )
 
 
 # === ROUTING FUNCTIONS ===
@@ -693,18 +713,16 @@ def route_after_supervisor(state: PYMESState) -> Literal[
     return "human_feedback"
 
 
-def route_after_agents(state: PYMESState) -> Literal["supervisor", "human_feedback"]:
-    """Route after specialized agents."""
-    messages = state.get("messages", [])
-    last_message = messages[-1] if messages else None
-
-    # If there's a pending transfer, go back to supervisor
-    if isinstance(last_message, AIMessage) and last_message.tool_calls:
-        tool_call = last_message.tool_calls[0]
-        if tool_call["name"].startswith("transfer_to_"):
-            return "supervisor"
-
-    # If no transfer, go to human feedback
+def route_after_agents(state: PYMESState) -> Literal["human_feedback"]:
+    """
+    Route after specialized agents.
+    Siguiendo el patrón del código de referencia, siempre ir a human_feedback
+    para evitar bucles infinitos.
+    """
+    logger.info("🔀 route_after_agents: Dirigiendo a human_feedback")
+    
+    # Siempre ir a human_feedback después de los agentes especializados
+    # Esto evita bucles infinitos y sigue el patrón del código de referencia
     return "human_feedback"
 
 
@@ -744,12 +762,11 @@ def create_supervisor_pymes_graph():
             }
         )
 
-        # Agents -> Supervisor or human feedback
+        # Agents -> human_feedback (evita bucles infinitos)
         workflow.add_conditional_edges(
             "info_extractor",
             route_after_agents,
             {
-                "supervisor": "supervisor",
                 "human_feedback": "human_feedback"
             }
         )
@@ -758,7 +775,6 @@ def create_supervisor_pymes_graph():
             "researcher",
             route_after_agents,
             {
-                "supervisor": "supervisor",
                 "human_feedback": "human_feedback"
             }
         )
@@ -767,7 +783,6 @@ def create_supervisor_pymes_graph():
             "consultant",
             route_after_agents,
             {
-                "supervisor": "supervisor",
                 "human_feedback": "human_feedback"
             }
         )
