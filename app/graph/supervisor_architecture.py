@@ -506,13 +506,21 @@ def info_extractor_agent_node(state: PYMESState) -> Dict[str, Any]:
 
         # Generate specific question or complete if we already have everything
         if missing_fields:
-            # Generate question for the first missing field
+            # Generate question for the first missing field with context
             field = missing_fields[0]
+            
+            # Crear contexto basado en información ya recopilada
+            context_parts = []
+            if updated_business_info.get("nombre_empresa"):
+                context_parts.append(f"empresa {updated_business_info['nombre_empresa']}")
+            
+            context_str = f" de tu {context_parts[0]}" if context_parts else ""
+            
             field_questions = {
-                "nombre_empresa": "¡Hola! Para ayudarte mejor, ¿cuál es el nombre de tu empresa o negocio?",
-                "sector": "¿En qué sector o industria opera tu negocio? (por ejemplo: restaurantes, software, retail, etc.)",
-                "productos_servicios_principales": "¿Cuáles son los principales productos o servicios que ofreces?",
-                "ubicacion": "¿Dónde opera tu negocio? (ciudad, país, o si es online)"
+                "nombre_empresa": "¡Hola! 👋 Soy tu asistente de negocios. Para brindarte la mejor ayuda personalizada, ¿cuál es el nombre de tu empresa o negocio?",
+                "sector": f"Perfecto{context_str}. Ahora, ¿en qué sector o industria opera tu negocio?",
+                "productos_servicios_principales": f"Excelente{context_str}. ¿Cuáles son los principales productos o servicios que ofreces?",
+                "ubicacion": f"Muy bien{context_str}. ¿Dónde opera principalmente tu negocio?"
             }
 
             question = field_questions.get(field, "¿Podrías proporcionar más información sobre tu negocio?")

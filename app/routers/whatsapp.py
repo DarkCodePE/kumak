@@ -86,15 +86,41 @@ async def handle_incoming_message(message_data: Dict[str, Any]) -> None:
         from_number = message_data["from"]
         message_type = message_data["type"]
 
-        # Solo procesar mensajes de texto por ahora
-        if message_type != "text":
+        # Procesar mensajes de texto y respuestas de botones
+        if message_type == "text":
+            user_message = message_data["text"]["body"]
+        elif message_type == "interactive":
+            # Manejar respuestas de botones
+            interactive_data = message_data["interactive"]
+            if interactive_data["type"] == "button_reply":
+                button_title = interactive_data["button_reply"]["title"]
+                button_id = interactive_data["button_reply"]["id"]
+                
+                # Convertir respuestas de botones a texto más natural
+                if button_id.startswith("sector_"):
+                    sector_map = {
+                        "sector_restaurant": "Restaurante",
+                        "sector_retail": "Retail/Comercio",
+                        "sector_services": "Servicios profesionales"
+                    }
+                    user_message = sector_map.get(button_id, button_title)
+                elif button_id.startswith("location_"):
+                    location_map = {
+                        "location_local": "Tengo un local físico",
+                        "location_online": "Opero completamente online",
+                        "location_both": "Tengo local físico y también vendo online"
+                    }
+                    user_message = location_map.get(button_id, button_title)
+                else:
+                    user_message = button_title
+            else:
+                user_message = "Respuesta interactiva recibida"
+        else:
             await send_whatsapp_message(
                 from_number,
-                "Por favor envía tu mensaje como texto. Estoy aquí para ayudarte a desarrollar propuestas de crecimiento para tu PYME 🚀"
+                "Por favor envía tu mensaje como texto o usa los botones disponibles. Estoy aquí para ayudarte a desarrollar propuestas de crecimiento para tu PYME 🚀"
             )
             return
-
-        user_message = message_data["text"]["body"]
         thread_id = f"whatsapp_{from_number}"
 
         logger.info(f"Procesando mensaje de {from_number}: {user_message}")
@@ -124,12 +150,47 @@ async def handle_incoming_message(message_data: Dict[str, Any]) -> None:
         )
 
 
+def create_sector_buttons():
+    """Crea botones para selección de sector."""
+    return [
+        {"type": "reply", "reply": {"id": "sector_restaurant", "title": "🍽️ Restaurante"}},
+        {"type": "reply", "reply": {"id": "sector_retail", "title": "🛍️ Retail"}},
+        {"type": "reply", "reply": {"id": "sector_services", "title": "💼 Servicios"}}
+    ]
+
+def create_location_buttons():
+    """Crea botones para selección de ubicación."""
+    return [
+        {"type": "reply", "reply": {"id": "location_local", "title": "🏪 Local físico"}},
+        {"type": "reply", "reply": {"id": "location_online", "title": "💻 Online"}},
+        {"type": "reply", "reply": {"id": "location_both", "title": "🏪💻 Ambos"}}
+    ]
+
+def get_buttons_for_question(question: str):
+    """Determina qué botones mostrar según la pregunta."""
+    question_lower = question.lower()
+    
+    # Detectar preguntas sobre sector/industria
+    sector_keywords = ["sector", "industria", "opera tu negocio", "tipo de negocio", "rubro"]
+    if any(keyword in question_lower for keyword in sector_keywords):
+        return create_sector_buttons()
+    
+    # Detectar preguntas sobre ubicación
+    location_keywords = ["dónde opera", "ubicación", "donde opera", "opera principalmente"]
+    if any(keyword in question_lower for keyword in location_keywords):
+        return create_location_buttons()
+    
+    return None
+
 async def handle_chat_result(from_number: str, thread_id: str, result: Dict[str, Any], original_message: str) -> None:
     """Maneja el resultado del procesamiento del chat."""
     try:
         if result["status"] == "completed":
             # Conversación completada normalmente
-            success = await send_whatsapp_message(from_number, result["answer"])
+            response_text = result["answer"]
+            buttons = get_buttons_for_question(response_text)
+            
+            success = await send_whatsapp_message(from_number, response_text, buttons)
             if success:
                 logger.info(f"Respuesta enviada exitosamente a {from_number}")
             else:
@@ -154,7 +215,10 @@ async def handle_chat_result(from_number: str, thread_id: str, result: Dict[str,
             else:
                 response_text += "\n\n💬 Continúa la conversación o escribe 'done' para finalizar."
 
-            success = await send_whatsapp_message(from_number, response_text)
+            # Determinar si necesita botones
+            buttons = get_buttons_for_question(response_text)
+            
+            success = await send_whatsapp_message(from_number, response_text, buttons)
             if success:
                 logger.info(f"Mensaje de interrupt enviado a {from_number}")
             else:
@@ -176,8 +240,8 @@ async def handle_chat_result(from_number: str, thread_id: str, result: Dict[str,
         )
 
 
-async def send_whatsapp_message(phone_number: str, message: str) -> bool:
-    """Envía un mensaje de WhatsApp."""
+async def send_whatsapp_message(phone_number: str, message: str, buttons: list = None) -> bool:
+    """Envía un mensaje de WhatsApp con botones opcionales."""
     try:
         headers = {
             "Authorization": f"Bearer {WHATSAPP_TOKEN}",
@@ -188,12 +252,28 @@ async def send_whatsapp_message(phone_number: str, message: str) -> bool:
         if len(message) > 4096:
             message = message[:4090] + "..."
 
-        payload = {
-            "messaging_product": "whatsapp",
-            "to": phone_number,
-            "type": "text",
-            "text": {"body": message}
-        }
+        # Si hay botones, usar mensaje interactivo
+        if buttons and len(buttons) <= 3:  # WhatsApp permite máximo 3 botones
+            payload = {
+                "messaging_product": "whatsapp",
+                "to": phone_number,
+                "type": "interactive",
+                "interactive": {
+                    "type": "button",
+                    "body": {"text": message},
+                    "action": {
+                        "buttons": buttons
+                    }
+                }
+            }
+        else:
+            # Mensaje de texto normal
+            payload = {
+                "messaging_product": "whatsapp",
+                "to": phone_number,
+                "type": "text",
+                "text": {"body": message}
+            }
 
         url = f"https://graph.facebook.com/v21.0/{WHATSAPP_PHONE_NUMBER_ID}/messages"
 
