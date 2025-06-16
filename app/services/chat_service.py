@@ -6,8 +6,68 @@ from langgraph.types import Command
 
 from app.database.postgres import get_postgres_saver, get_async_postgres_saver
 from app.graph.multi_agent_supervisor import create_multi_agent_supervisor_graph
+from app.graph.central_orchestrator import process_message_with_central_orchestrator, get_orchestrator_info
 
 logger = logging.getLogger(__name__)
+
+async def process_message_central(
+        message: str,
+        thread_id: str,
+        reset_thread: bool = False
+) -> Dict[str, Any]:
+    """
+    Procesa un mensaje usando el nuevo Orquestador Central Refinado.
+    
+    Esta es la función recomendada para nuevas implementaciones.
+    Implementa el patrón ReAct puro con herramientas especializadas y InjectedState.
+    
+    Args:
+        message: Mensaje del usuario
+        thread_id: ID único del hilo de conversación
+        reset_thread: Si reiniciar el estado del hilo
+        
+    Returns:
+        Dict con status, answer, business_info y metadatos
+    """
+    try:
+        is_whatsapp = thread_id.startswith("whatsapp_")
+        logger.info(f"🚀 Procesando con Orquestador Central - Thread: {thread_id} (WhatsApp: {is_whatsapp})")
+        
+        # Usar el orquestador central refinado
+        result = await process_message_with_central_orchestrator(
+            message=message,
+            thread_id=thread_id,
+            reset_thread=reset_thread
+        )
+        
+        # Agregar metadatos adicionales
+        result.update({
+            "channel": "whatsapp" if is_whatsapp else "api",
+            "architecture": "central_orchestrator_refined",
+            "features": ["InjectedState", "ToolNode", "ReAct_Pure"]
+        })
+        
+        logger.info(f"✅ Orquestador Central completado - Status: {result.get('status')}")
+        return result
+        
+    except Exception as e:
+        error_detail = str(e) if str(e) else "Error desconocido"
+        stack_trace = traceback.format_exc()
+        logger.error(f"Error en Orquestador Central para thread {thread_id}: {error_detail}")
+        logger.error(f"Stack trace: {stack_trace}")
+        
+        # Mensaje de error amigable basado en canal
+        error_message = "Disculpa, encontré un problema técnico. Por favor intenta nuevamente." if is_whatsapp else f"Error técnico: {error_detail}"
+        
+        return {
+            "thread_id": thread_id,
+            "message": message,
+            "answer": error_message,
+            "error": error_detail,
+            "status": "error",
+            "channel": "whatsapp" if is_whatsapp else "api",
+            "architecture": "central_orchestrator_refined"
+        }
 
 def process_message(
         message: str,
@@ -16,76 +76,67 @@ def process_message(
         reset_thread: bool = False
 ) -> Dict[str, Any]:
     """
-    Process a chat message using the LangGraph workflow.
-    Supports both initial messages and resuming after interrupts.
-    Optimized for WhatsApp integration.
+    Process a message using the Multi-Agent Supervisor graph.
+    Enhanced for WhatsApp integration.
 
     Args:
         message: The user's message
-        thread_id: A unique identifier for this conversation thread
-        is_resuming: Whether this is resuming after an interrupt
-        reset_thread: Whether to reset the thread and start a new conversation
+        thread_id: Unique identifier for the conversation thread
+        is_resuming: Whether this is resuming an interrupted conversation
+        reset_thread: Whether to reset the thread state
 
     Returns:
-        dict: The result containing answer, status (completed/interrupted), and thread_id
+        Dictionary with status, answer, and other metadata
     """
     try:
-        # Detectar si es un thread de WhatsApp
         is_whatsapp = thread_id.startswith("whatsapp_")
+        logger.info(f"Processing message for thread {thread_id} (WhatsApp: {is_whatsapp})")
 
         # Create the Multi-Agent Supervisor graph
         logger.info(f"Creating Multi-Agent Supervisor graph for thread {thread_id} (WhatsApp: {is_whatsapp})")
         graph = create_multi_agent_supervisor_graph()
         logger.info(f"Multi-Agent Supervisor graph created successfully for thread {thread_id}")
 
-        # Set up configuration with the thread_id and recursion limit
-        config = {
-            "configurable": {
-                "thread_id": thread_id,
-                "reset_thread": reset_thread
-            },
-            "recursion_limit": 100  # Aumentar límite de recursión para evitar errores
-        }
+        # Create a configuration for the thread
+        config = {"configurable": {"thread_id": thread_id}}
 
-        # Check if we're resuming from an interrupt
-        if is_resuming:
-            logger.info(f"Resuming graph execution for thread {thread_id}")
-            # Use Command to resume with the user's message
-            graph_input = Command(resume=message)
-        else:
-            logger.info(f"Starting new graph execution for thread {thread_id}")
-
-            # Try to get existing state for non-reset conversations
-            state = None
-            if not reset_thread:
-                try:
-                    state = graph.get_state(config)
-                    logger.info(f"Retrieved existing state for thread {thread_id}")
-                except Exception as e:
-                    logger.info(f"No existing state found for thread {thread_id}: {str(e)}")
-
-            # Prepare the initial state
+        # Reset thread state if requested
+        if reset_thread:
+            logger.info(f"Resetting thread state for {thread_id}")
+            # Clear the thread's state by creating a new initial state
             initial_state = {
-                "input": message,
                 "messages": [HumanMessage(content=message)],
                 "business_info": {},
-                "growth_goals": {},
-                "business_challenges": {},
-                "stage": "info_gathering",
-                "growth_proposal": None,
-                "context": "",
-                "summary": "",
-                "web_search": None,
-                "documents": None,
+                "research_results": [],
+                "feedback": [],
+                "input": message,
+                "answer": "",
+                "human_feedback": []
+            }
+            graph_input = initial_state
+        elif is_resuming:
+            logger.info(f"Resuming interrupted conversation for thread {thread_id}")
+            # For resuming, we just need to provide the new message
+            graph_input = {"messages": [HumanMessage(content=message)]}
+        else:
+            logger.info(f"Starting new graph execution for thread {thread_id}")
+            # For new conversations, create initial state
+            initial_state = {
+                "messages": [HumanMessage(content=message)],
+                "business_info": {},
+                "research_results": [],
+                "feedback": [],
+                "input": message,
                 "answer": "",
                 "human_feedback": []
             }
 
             graph_input = initial_state
 
-        # Execute the graph
+        # Execute the graph SÍNCRONAMENTE (nodos asíncronos funcionan con invoke)
         try:
             logger.info(f"Invoking graph for thread {thread_id}")
+            # ✅ CORRECCIÓN: Usar invoke síncrono (LangGraph maneja nodos asíncronos internamente)
             result = graph.invoke(graph_input, config)
             logger.info(f"Graph execution completed or paused for thread {thread_id}")
         except Exception as graph_error:
@@ -222,8 +273,8 @@ async def get_chat_history(thread_id: str) -> List[Dict[str, Any]]:
         is_whatsapp = thread_id.startswith("whatsapp_")
         logger.info(f"Retrieving chat history for thread {thread_id} (WhatsApp: {is_whatsapp})")
 
-        # Create the chat graph to access its API
-        graph = create_chat_graph()
+        # Create the Multi-Agent Supervisor graph to access its API
+        graph = create_multi_agent_supervisor_graph()
 
         # Create a configuration for the thread
         config = {"configurable": {"thread_id": thread_id}}

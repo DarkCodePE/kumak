@@ -204,6 +204,16 @@ class BusinessInfoManager:
         
         return "\n".join(formatted_parts)
 
+    async def extract_info(self, user_message: str, thread_id: str, current_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Método de compatibilidad que extrae información empresarial de un mensaje de texto."""
+        from langchain_core.messages import HumanMessage
+        
+        # Crear un mensaje HumanMessage para usar con el método principal
+        message = HumanMessage(content=user_message)
+        
+        # Usar el método principal para extraer información
+        return await self.extract_and_store_business_info(message, current_info, thread_id)
+
 
 @lru_cache
 def get_business_info_manager() -> BusinessInfoManager:

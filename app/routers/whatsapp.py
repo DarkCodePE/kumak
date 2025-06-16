@@ -5,8 +5,9 @@ from typing import Dict, Any
 import httpx
 from fastapi import APIRouter, Request, Response
 
-# Importar tu servicio existente
-from app.services.chat_service import process_message
+# NUEVA IMPORTACIÓN: Usar el Orquestador Central Refinado
+from app.services.chat_service import process_message, process_message_central
+from app.services.whatsapp_utils import format_business_response_for_whatsapp, log_message_stats, get_continuation_messages
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,11 @@ WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
 
 # Diccionario para trackear threads activos con interrupts
+# NOTA: Con la nueva arquitectura ReAct pura, esto podría no ser necesario
 active_interrupts = {}
+
+# === CONFIGURACIÓN GLOBAL ===
+USE_CENTRAL_ORCHESTRATOR = True  # Feature flag para activar la nueva arquitectura
 
 
 @whatsapp_router.api_route("/webhook", methods=["GET", "POST"])
@@ -125,20 +130,37 @@ async def handle_incoming_message(message_data: Dict[str, Any]) -> None:
 
         logger.info(f"Procesando mensaje de {from_number}: {user_message}")
 
-        # Verificar si este thread tiene un interrupt activo
-        is_resuming = thread_id in active_interrupts
+        # === NUEVO ROUTING: ORQUESTADOR CENTRAL VS LEGACY ===
+        
+        if USE_CENTRAL_ORCHESTRATOR:
+            logger.info(f"🚀 Usando Orquestador Central Refinado para {thread_id}")
+            
+            # La nueva arquitectura no necesita manejo de interrupts explícito
+            # El patrón ReAct puro maneja todo internamente
+            result = await process_message_central(
+                message=user_message,
+                thread_id=thread_id,
+                reset_thread=False  # Por defecto no reseteamos
+            )
+            
+        else:
+            # LEGACY: Sistema original con interrupts
+            logger.info(f"📞 Usando sistema legacy para {thread_id}")
+            
+            # Verificar si este thread tiene un interrupt activo
+            is_resuming = thread_id in active_interrupts
 
-        if is_resuming:
-            logger.info(f"Resumiendo conversación interrumpida para {thread_id}")
-            # Remover del diccionario de interrupts activos
-            del active_interrupts[thread_id]
+            if is_resuming:
+                logger.info(f"Resumiendo conversación interrumpida para {thread_id}")
+                # Remover del diccionario de interrupts activos
+                del active_interrupts[thread_id]
 
-        # Usar tu servicio existente
-        result = process_message(
-            message=user_message,
-            thread_id=thread_id,
-            is_resuming=is_resuming
-        )
+            # Usar el servicio legacy
+            result = process_message(
+                message=user_message,
+                thread_id=thread_id,
+                is_resuming=is_resuming
+            )
 
         await handle_chat_result(from_number, thread_id, result, user_message)
 
@@ -188,41 +210,81 @@ async def handle_chat_result(from_number: str, thread_id: str, result: Dict[str,
         if result["status"] == "completed":
             # Conversación completada normalmente
             response_text = result["answer"]
-            buttons = get_buttons_for_question(response_text)
             
-            success = await send_whatsapp_message(from_number, response_text, buttons)
+            # Registrar estadísticas y verificar si necesita división
+            log_message_stats(response_text, "respuesta completada")
+            
+            # Obtener primer mensaje y mensajes de continuación
+            first_message = format_business_response_for_whatsapp(response_text)
+            continuation_messages = get_continuation_messages(response_text)
+            
+            buttons = get_buttons_for_question(first_message)
+            
+            # Enviar primer mensaje
+            success = await send_whatsapp_message(from_number, first_message, buttons)
             if success:
-                logger.info(f"Respuesta enviada exitosamente a {from_number}")
+                logger.info(f"Primer mensaje enviado exitosamente a {from_number}")
+                
+                # Enviar mensajes de continuación si existen
+                if continuation_messages:
+                    logger.info(f"Enviando {len(continuation_messages)} mensajes de continuación")
+                    for i, cont_message in enumerate(continuation_messages, 2):
+                        # Esperar un poco entre mensajes para evitar spam
+                        import asyncio
+                        await asyncio.sleep(1)
+                        
+                        cont_success = await send_whatsapp_message(from_number, cont_message)
+                        if cont_success:
+                            logger.info(f"Mensaje de continuación {i} enviado exitosamente")
+                        else:
+                            logger.error(f"Error enviando mensaje de continuación {i}")
+                            break
+                else:
+                    logger.info("No hay mensajes de continuación necesarios")
             else:
-                logger.error(f"Error enviando respuesta a {from_number}")
+                logger.error(f"Error enviando mensaje a {from_number}")
 
         elif result["status"] == "interrupted":
-            # La conversación está esperando input humano
+            # Conversación interrumpida - esperando input del usuario
             logger.info(f"Conversación interrumpida para {thread_id}")
-
-            # Agregar a threads activos con interrupt
-            active_interrupts[thread_id] = {
-                "timestamp": traceback.format_exc(),
-                "last_message": original_message
-            }
-
-            # Enviar la respuesta del assistant + mensaje de interrupt
-            response_text = result["answer"]
-
-            # Agregar mensaje de instrucción para el usuario
-            if result.get("interrupt_message"):
-                response_text += f"\n\n{result['interrupt_message']}"
-            else:
-                response_text += "\n\n💬 Continúa la conversación o escribe 'done' para finalizar."
-
-            # Determinar si necesita botones
-            buttons = get_buttons_for_question(response_text)
             
-            success = await send_whatsapp_message(from_number, response_text, buttons)
-            if success:
-                logger.info(f"Mensaje de interrupt enviado a {from_number}")
-            else:
-                logger.error(f"Error enviando mensaje de interrupt a {from_number}")
+            # Marcar este thread como teniendo un interrupt activo
+            active_interrupts[thread_id] = True
+            
+            # Obtener respuesta del interrupt
+            interrupt_answer = result.get("interrupt_data", {}).get("answer", "")
+            
+            if interrupt_answer:
+                # Registrar estadísticas y verificar si necesita división
+                log_message_stats(interrupt_answer, "respuesta interrumpida")
+                
+                # Obtener primer mensaje y mensajes de continuación
+                first_message = format_business_response_for_whatsapp(interrupt_answer)
+                continuation_messages = get_continuation_messages(interrupt_answer)
+                
+                buttons = get_buttons_for_question(first_message)
+                
+                # Enviar primer mensaje
+                success = await send_whatsapp_message(from_number, first_message, buttons)
+                if success:
+                    logger.info(f"Mensaje de interrupt enviado a {from_number}")
+                    
+                    # Enviar mensajes de continuación si existen
+                    if continuation_messages:
+                        logger.info(f"Enviando {len(continuation_messages)} mensajes de continuación para interrupt")
+                        for i, cont_message in enumerate(continuation_messages, 2):
+                            # Esperar un poco entre mensajes
+                            import asyncio
+                            await asyncio.sleep(1)
+                            
+                            cont_success = await send_whatsapp_message(from_number, cont_message)
+                            if cont_success:
+                                logger.info(f"Mensaje de continuación interrupt {i} enviado exitosamente")
+                            else:
+                                logger.error(f"Error enviando mensaje de continuación interrupt {i}")
+                                break
+                else:
+                    logger.error(f"Error enviando mensaje de interrupt a {from_number}")
 
         else:
             # Error en el procesamiento
@@ -248,9 +310,10 @@ async def send_whatsapp_message(phone_number: str, message: str, buttons: list =
             "Content-Type": "application/json"
         }
 
-        # Truncar mensaje si es muy largo (WhatsApp tiene límites)
-        if len(message) > 4096:
-            message = message[:4090] + "..."
+        # Truncar mensaje si es muy largo (WhatsApp tiene límites más estrictos)
+        if len(message) > 1024:
+            logger.warning(f"Mensaje muy largo para WhatsApp ({len(message)} chars), truncando")
+            message = format_business_response_for_whatsapp(message)
 
         # Si hay botones, usar mensaje interactivo
         if buttons and len(buttons) <= 3:  # WhatsApp permite máximo 3 botones
