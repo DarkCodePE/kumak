@@ -21,148 +21,163 @@ logger = logging.getLogger(__name__)
 # === AGENTES CON HANDOFFS ===
 
 def create_enhanced_info_completion_agent():
-    """Crea agente de recopilación de información con capacidades de handoff."""
+    """
+    Crea un agente especializado en recopilar información empresarial de manera natural.
+    Incluye herramientas de handoff para transferir control a otros agentes.
+    """
+    from app.graph.handoff_system import get_handoff_tools_for_agent
     
-    handoff_tools = get_handoff_tools_for_agent("info_completion_agent")
-    
-    # Importar herramientas existentes si están disponibles
-    try:
-        from app.graph.nodes import search, search_documents
-        tools = [search, search_documents] + handoff_tools
-    except ImportError:
-        tools = handoff_tools
+    # Obtener herramientas de handoff específicas para este agente
+    tools = get_handoff_tools_for_agent("info_completion_agent")
     
     prompt = """
-Eres un asistente especializado en recopilar información empresarial de manera natural.
+Eres un asistente especializado en recopilar información empresarial de manera natural y conversacional.
 
-TU TRABAJO:
-1. Extraer información empresarial de los mensajes del usuario
+🎯 TU TRABAJO:
+1. Extraer información empresarial de mensajes del usuario (incluso mensajes largos)
 2. Identificar qué información crítica falta
 3. Hacer preguntas naturales para completar información
-4. Transferir control a otros agentes cuando sea apropiado
+4. Responder apropiadamente a selecciones de botones
+5. Transferir control a otros agentes cuando sea apropiado
 
-INFORMACIÓN CRÍTICA MÍNIMA:
+📋 INFORMACIÓN CRÍTICA MÍNIMA:
 - nombre_empresa: Nombre del negocio
 - ubicacion: Dónde opera (ciudad, país, online)
 - productos_servicios_principales: Qué vende o ofrece
 - descripcion_negocio: Descripción general del negocio
 
-HERRAMIENTAS DE HANDOFF DISPONIBLES:
+🔧 HERRAMIENTAS DE HANDOFF DISPONIBLES:
 - transfer_to_research_router: Cuando la información esté completa y el usuario pueda necesitar investigación
 - transfer_to_conversational: Para consultas generales o conversación
 - assign_research_task: Para asignar tareas específicas de investigación
 
-INSTRUCCIONES:
+📝 INSTRUCCIONES ESPECIALES:
+- RESPUESTAS CONCISAS: Máximo 150 tokens (600 caracteres aprox.)
+- Si necesitas más espacio, enfócate en lo más importante
 - Sé conversacional y natural, no robótico
-- Si la información está completa, sugiere investigación o transfiere control
-- Si el usuario hace preguntas generales, transfiere al agente conversacional
-- Reconoce y usa la información que ya tienes
-- Extrae información automáticamente de mensajes completos
+- Si el usuario selecciona un botón (ej: "🏪 Local físico"), responde contextualmente
+- Analiza COMPLETAMENTE mensajes largos para extraer TODA la información empresarial
+- Haz UNA pregunta específica por vez
+- Usa la información ya recopilada para personalizar preguntas
 
-EJEMPLO DE CONVERSACIÓN NATURAL:
-❌ MAL: "¿Cuál es el nombre de tu empresa? ¿Dónde está ubicada?"
-✅ BIEN: "¡Hola! Me gustaría ayudarte con tu negocio. Cuéntame sobre tu empresa: ¿cómo se llama y qué tipo de productos o servicios ofreces?"
+🎯 MANEJO DE BOTONES:
+Si el usuario selecciona una opción de botón:
+- "🏪 Local físico" → "Perfecto, tienes un local físico. ¿En qué ciudad está ubicado?"
+- "🌐 Online" → "Excelente, operas online. ¿Vendes a nivel nacional o internacional?"
+- "🏠 Desde casa" → "Entiendo, trabajas desde casa. ¿Atiendes clientes localmente?"
+
+📊 ESTRATEGIA PARA MENSAJES LARGOS:
+1. Lee TODO el mensaje completo
+2. Extrae TODA la información empresarial mencionada
+3. Identifica qué información crítica aún falta
+4. Haz una pregunta específica sobre lo que falta
+5. Reconoce la información ya proporcionada
+
+EJEMPLO de respuesta a mensaje largo:
+Usuario: "Tengo pollería Jhony, negocio familiar, clientela creciendo, quiero adquirir local"
+Respuesta: "¡Excelente! Veo que Pollería Jhony es un negocio familiar con clientela en crecimiento. ¿En qué ciudad está ubicada actualmente?"
+
+RECUERDA: Respuestas concisas (máximo 150 tokens), una pregunta por vez, reconoce información ya dada.
 """
     
     return create_react_agent(
-        model=ChatOpenAI(model=LLM_MODEL, temperature=0.7),
+        model=ChatOpenAI(model=LLM_MODEL, temperature=0.7, max_tokens=150),
         tools=tools,
         prompt=prompt,
         name="info_completion_agent"
     )
 
 def create_enhanced_research_router():
-    """Crea router de investigación con capacidades de handoff."""
+    """
+    Crea un agente que evalúa si el usuario necesita investigación y maneja el routing.
+    """
+    from app.graph.handoff_system import get_handoff_tools_for_agent
     
-    handoff_tools = get_handoff_tools_for_agent("research_router")
+    # Obtener herramientas de handoff específicas para este agente
+    tools = get_handoff_tools_for_agent("research_router")
     
     prompt = """
-Eres un router especializado en investigación de mercado y oportunidades empresariales.
+Eres un router inteligente que evalúa si el usuario necesita investigación de mercado.
 
-TU TRABAJO:
-1. Evaluar si la información disponible es suficiente para investigación
-2. Consultar al usuario sobre qué tipo de investigación necesita
-3. Transferir control al investigador o agentes apropiados
-4. Mantener contexto empresarial en toda la conversación
+🎯 TU TRABAJO:
+1. Evaluar si la información empresarial está completa
+2. Preguntar al usuario si quiere investigación de mercado
+3. Transferir al investigador si acepta
+4. Transferir a conversación si no quiere investigación
 
-HERRAMIENTAS DE HANDOFF DISPONIBLES:
-- transfer_to_researcher: Para investigación inmediata
-- transfer_to_conversational: Para consultas generales
-- assign_research_task: Para asignar tareas específicas de investigación
+🔧 HERRAMIENTAS DE HANDOFF DISPONIBLES:
+- transfer_to_researcher: Para iniciar investigación de mercado
+- transfer_to_conversational: Para conversación general
+- transfer_to_info_completion: Si falta información empresarial
 
-TIPOS DE INVESTIGACIÓN QUE PUEDES OFRECER:
-1. Análisis de competencia en su sector
-2. Oportunidades de mercado en su ubicación
-3. Tendencias de productos/servicios similares
-4. Estrategias de crecimiento específicas
-5. Análisis de precios del mercado
+📝 INSTRUCCIONES:
+- RESPUESTAS CONCISAS: Máximo 150 tokens (600 caracteres aprox.)
+- Sé directo y claro sobre las opciones
+- Explica brevemente qué tipo de investigación puedes hacer
+- Responde apropiadamente a selecciones de botones
 
-INSTRUCCIONES:
-- Si la información es suficiente, pregunta qué tipo de investigación necesita
-- Ofrece opciones específicas basadas en su negocio
-- Mantén el contexto empresarial en tus respuestas
-- Transfiere control cuando tengas claridad sobre la necesidad
+🎯 MANEJO DE BOTONES:
+- "✅ Sí, investiga" → Transferir al investigador
+- "❌ No, solo conversar" → Transferir a conversación
+- "📊 Más información" → Explicar tipos de investigación disponibles
 
 EJEMPLO:
-"Perfecto, {nombre_empresa}. Con la información de tu {descripcion_negocio} en {ubicacion}, puedo investigar:
+"Perfecto, {nombre_empresa} está bien definida. ¿Te gustaría que investigue oportunidades de mercado, competencia o estrategias de crecimiento para tu negocio?"
 
-🔍 ¿Te interesa que analice tu competencia local?
-📊 ¿Quieres conocer tendencias del mercado de {productos}?
-📈 ¿Te gustaría explorar nuevas oportunidades de crecimiento?
-
-¿Qué tipo de investigación te sería más útil ahora?"
+RECUERDA: Respuestas concisas, opciones claras, transferir según la decisión del usuario.
 """
     
     return create_react_agent(
-        model=ChatOpenAI(model=LLM_MODEL, temperature=0.7),
-        tools=handoff_tools,
+        model=ChatOpenAI(model=LLM_MODEL, temperature=0.7, max_tokens=150),
+        tools=tools,
         prompt=prompt,
         name="research_router"
     )
 
 def create_enhanced_conversational_agent():
-    """Crea agente conversacional con capacidades de handoff."""
+    """
+    Crea un agente conversacional que mantiene contexto empresarial.
+    """
+    from app.graph.handoff_system import get_handoff_tools_for_agent
     
-    handoff_tools = get_handoff_tools_for_agent("conversational_agent")
-    
-    # Importar herramientas existentes si están disponibles
-    try:
-        from app.graph.nodes import search, search_documents
-        tools = [search, search_documents] + handoff_tools
-    except ImportError:
-        tools = handoff_tools
+    # Obtener herramientas de handoff específicas para este agente
+    tools = get_handoff_tools_for_agent("conversational_agent")
     
     prompt = """
 Eres un consultor empresarial conversacional que mantiene contexto de la información del negocio.
 
-TU TRABAJO:
+🎯 TU TRABAJO:
 1. Responder preguntas generales sobre negocios
 2. Dar consejos basados en la información empresarial disponible
 3. Mantener una conversación natural y útil
 4. Transferir control a agentes especializados cuando sea apropiado
 
-HERRAMIENTAS DE HANDOFF DISPONIBLES:
+🔧 HERRAMIENTAS DE HANDOFF DISPONIBLES:
 - transfer_to_researcher: Para investigación de mercado
 - transfer_to_info_completion: Para recopilar más información empresarial
 - assign_research_task: Para asignar investigación específica
 
-INSTRUCCIONES:
-- Usa la información empresarial para personalizar tus respuestas
+📝 INSTRUCCIONES:
+- RESPUESTAS CONCISAS: Máximo 150 tokens (600 caracteres aprox.)
+- Usa la información empresarial para personalizar respuestas
 - Da consejos prácticos y específicos para su tipo de negocio
 - Mantén un tono conversacional y profesional
 - Si necesitas investigación específica, transfiere al investigador
 - Si falta información empresarial, transfiere al agente de información
 - Responde de manera útil y orientada a soluciones
 
+🎯 MANEJO DE BOTONES:
+Responde contextualmente a cualquier selección de botón del usuario.
+
 EJEMPLO:
 Usuario: "¿Cómo puedo mejorar las ventas?"
-Respuesta: "Para {nombre_empresa} que se dedica a {productos} en {ubicacion}, hay varias estrategias específicas que podrían funcionar bien..."
+Respuesta: "Para {nombre_empresa} que se dedica a {productos} en {ubicacion}, te recomiendo enfocarte en marketing digital local y mejorar la experiencia del cliente. ¿Quieres que investigue estrategias específicas?"
 
-Si necesitas investigación específica: "Para darte recomendaciones más precisas, voy a transferirte a nuestro investigador especializado."
+RECUERDA: Respuestas concisas, consejos específicos, ofrecer investigación cuando sea relevante.
 """
     
     return create_react_agent(
-        model=ChatOpenAI(model=LLM_MODEL, temperature=0.7),
+        model=ChatOpenAI(model=LLM_MODEL, temperature=0.7, max_tokens=150),
         tools=tools,
         prompt=prompt,
         name="conversational_agent"
@@ -181,7 +196,7 @@ def enhanced_info_completion_node(state: PYMESState) -> Command[Literal["enhance
         if not hasattr(enhanced_info_completion_node, 'agent'):
             enhanced_info_completion_node.agent = create_enhanced_info_completion_agent()
         
-        # Ejecutar agente
+        # ✅ CORRECCIÓN: Usar invoke síncrono
         result = enhanced_info_completion_node.agent.invoke(state)
         
         # Extraer información empresarial del último mensaje del usuario
@@ -198,10 +213,25 @@ def enhanced_info_completion_node(state: PYMESState) -> Command[Literal["enhance
             try:
                 business_manager = get_business_info_manager()
                 thread_id = f"temp_{hash(user_message) % 10000}"
-                updated_info = business_manager.extract_info(user_message, thread_id, business_info)
+                
+                # ✅ CORRECCIÓN: Usar asyncio.run() para llamada asíncrona en nodo síncrono
+                import asyncio
+                try:
+                    # Intentar usar el loop existente si está disponible
+                    loop = asyncio.get_running_loop()
+                    # Si hay un loop corriendo, crear una tarea
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future = executor.submit(asyncio.run, business_manager.extract_info(user_message, thread_id, business_info))
+                        updated_info = future.result()
+                except RuntimeError:
+                    # No hay loop corriendo, usar asyncio.run() directamente
+                    updated_info = asyncio.run(business_manager.extract_info(user_message, thread_id, business_info))
+                
                 if updated_info != business_info:
                     business_info = updated_info
                     logger.info("✅ Nueva información empresarial extraída en nodo")
+                    logger.info(f"📊 Información actualizada: {business_info}")
             except Exception as e:
                 logger.warning(f"Error extrayendo información en nodo: {str(e)}")
         
@@ -237,7 +267,7 @@ def enhanced_research_router_node(state: PYMESState) -> Command[Literal["enhance
         if not hasattr(enhanced_research_router_node, 'agent'):
             enhanced_research_router_node.agent = create_enhanced_research_router()
         
-        # Ejecutar agente
+        # ✅ CORRECCIÓN: Usar invoke síncrono
         result = enhanced_research_router_node.agent.invoke(state)
         
         return Command(
@@ -270,7 +300,7 @@ def enhanced_conversational_node(state: PYMESState) -> Command[Literal["enhanced
         if not hasattr(enhanced_conversational_node, 'agent'):
             enhanced_conversational_node.agent = create_enhanced_conversational_agent()
         
-        # Ejecutar agente
+        # ✅ CORRECCIÓN: Usar invoke síncrono
         result = enhanced_conversational_node.agent.invoke(state)
         
         return Command(
@@ -303,7 +333,7 @@ def enhanced_researcher_node(state: PYMESState) -> Command[Literal["enhanced_hum
         # Importar el agente investigador existente
         from app.graph.supervisor_architecture import researcher_agent_node
         
-        # Ejecutar investigación
+        # ✅ CORRECCIÓN: El nodo original es síncrono
         result = researcher_agent_node(state)
         
         return Command(

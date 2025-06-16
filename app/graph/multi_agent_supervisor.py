@@ -20,7 +20,7 @@ from app.graph.enhanced_agents import (
     enhanced_conversational_node,
     enhanced_researcher_node
 )
-from app.database.postgres import get_postgres_saver, get_postgres_store
+from app.database.postgres import get_postgres_saver, get_postgres_store, get_async_postgres_saver
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ def create_multi_agent_supervisor_graph():
         
         # === COMPILAR CON CHECKPOINTER ===
         store = get_postgres_store()
-        checkpointer = get_postgres_saver()
+        checkpointer = get_postgres_saver()  # ✅ Usar checkpointer síncrono (funciona con nodos asíncronos)
 
         compiled_graph = workflow.compile(
             checkpointer=checkpointer,

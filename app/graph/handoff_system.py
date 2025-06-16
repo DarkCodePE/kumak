@@ -144,10 +144,25 @@ def intelligent_supervisor_node(state: PYMESState) -> Command[Literal[
             try:
                 business_manager = get_business_info_manager()
                 thread_id = f"temp_{hash(user_message) % 10000}"
-                updated_info = business_manager.extract_info(user_message, thread_id, business_info)
+                
+                # ✅ CORRECCIÓN: Usar asyncio.run() para llamada asíncrona en nodo síncrono
+                import asyncio
+                try:
+                    # Intentar usar el loop existente si está disponible
+                    loop = asyncio.get_running_loop()
+                    # Si hay un loop corriendo, crear una tarea
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future = executor.submit(asyncio.run, business_manager.extract_info(user_message, thread_id, business_info))
+                        updated_info = future.result()
+                except RuntimeError:
+                    # No hay loop corriendo, usar asyncio.run() directamente
+                    updated_info = asyncio.run(business_manager.extract_info(user_message, thread_id, business_info))
+                
                 if updated_info != business_info:
                     business_info = updated_info
                     logger.info("✅ Nueva información empresarial extraída")
+                    logger.info(f"📊 Información actualizada: {business_info}")
             except Exception as e:
                 logger.warning(f"Error extrayendo información: {str(e)}")
         
@@ -161,7 +176,7 @@ def intelligent_supervisor_node(state: PYMESState) -> Command[Literal[
         wants_research = any(keyword in message_lower for keyword in 
                            ["investiga", "analiza", "oportunidades", "mercado", "competencia", "crecimiento"])
         wants_conversation = any(keyword in message_lower for keyword in 
-                               ["qué opinas", "cómo puedo", "ayúdame", "consejo", "recomienda"])
+                               ["qué opinas", "consejo específico", "recomienda algo", "tu opinión"])
         wants_to_change = any(keyword in message_lower for keyword in 
                             ["corrección", "cambiar", "actualizar", "mejor dicho", "en realidad"])
         
@@ -174,7 +189,7 @@ def intelligent_supervisor_node(state: PYMESState) -> Command[Literal[
                 goto=END
             )
         
-        # 6. LÓGICA DE ROUTING CON COMMAND
+        # 6. LÓGICA DE ROUTING CON COMMAND - PRIORIDAD CORREGIDA
         
         # PRIORIDAD 1: Cambiar información
         if wants_to_change:
@@ -188,41 +203,7 @@ def intelligent_supervisor_node(state: PYMESState) -> Command[Literal[
                 goto="info_completion_agent"
             )
         
-        # PRIORIDAD 2: Investigación específica
-        elif wants_research:
-            if can_research:
-                logger.info("🔄 Routing: researcher (investigación solicitada)")
-                return Command(
-                    update={
-                        "business_info": business_info,
-                        "routing_reason": "Usuario solicita investigación",
-                        "research_readiness": 1.0
-                    },
-                    goto="researcher"
-                )
-            else:
-                logger.info("🔄 Routing: info_completion_agent (investigación requiere más info)")
-                return Command(
-                    update={
-                        "business_info": business_info,
-                        "routing_reason": "Investigación solicitada pero falta información",
-                        "missing_fields": missing_critical
-                    },
-                    goto="info_completion_agent"
-                )
-        
-        # PRIORIDAD 3: Conversación general
-        elif wants_conversation:
-            logger.info("🔄 Routing: conversational_agent")
-            return Command(
-                update={
-                    "business_info": business_info,
-                    "routing_reason": "Usuario quiere conversación general"
-                },
-                goto="conversational_agent"
-            )
-        
-        # PRIORIDAD 4: Falta información crítica
+        # PRIORIDAD 2: ⚠️ CRÍTICO - Falta información necesaria (antes que conversación)
         elif not can_research:
             logger.info("🔄 Routing: info_completion_agent (faltan datos críticos)")
             return Command(
@@ -233,6 +214,29 @@ def intelligent_supervisor_node(state: PYMESState) -> Command[Literal[
                     "completeness": (len(critical_fields) - len(missing_critical)) / len(critical_fields)
                 },
                 goto="info_completion_agent"
+            )
+        
+        # PRIORIDAD 3: Investigación específica (con información completa)
+        elif wants_research:
+            logger.info("🔄 Routing: researcher (investigación solicitada)")
+            return Command(
+                update={
+                    "business_info": business_info,
+                    "routing_reason": "Usuario solicita investigación",
+                    "research_readiness": 1.0
+                },
+                goto="researcher"
+            )
+        
+        # PRIORIDAD 4: Conversación general (solo con información completa)
+        elif wants_conversation:
+            logger.info("🔄 Routing: conversational_agent")
+            return Command(
+                update={
+                    "business_info": business_info,
+                    "routing_reason": "Usuario quiere conversación general"
+                },
+                goto="conversational_agent"
             )
         
         # PRIORIDAD 5: Información completa, preguntar sobre investigación
