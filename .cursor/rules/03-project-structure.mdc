@@ -1,0 +1,30 @@
+---
+
+### Regla 3: Diseño de Herramientas de Handoff (A pedido)
+
+Esta regla se enfoca en la parte más importante de la comunicación del enjambre: las herramientas de transferencia.
+
+**`.cursor/rules/03-handoff-tool-design.mdc`**
+```mdc
+---
+description: "Best practices for designing and implementing handoff tools for agent-to-agent communication."
+type: Agent Requested
+---
+
+Handoff tools are the lifeblood of the agent swarm. Follow these patterns when creating them.
+
+### Use the Pre-built `create_handoff_tool`
+
+For most cases, the `langgraph_swarm.create_handoff_tool` is sufficient. It correctly implements the `Command` pattern required for routing.
+
+- **`agent_name`:** This must exactly match the `name` of the target agent's `create_react_agent` definition.
+- **`description`:** This is critical. The description is what the source agent's LLM reads to decide whether to use this tool. It should be clear and descriptive.
+
+```python
+# Example of a well-defined handoff tool
+from langgraph_swarm import create_handoff_tool
+
+transfer_to_researcher = create_handoff_tool(
+    agent_name="research_agent",
+    description="Use this tool to pass control to the Research Agent when the user asks for in-depth analysis, web searches, or report generation."
+)

@@ -1,0 +1,22 @@
+---
+description: "Guidelines for creating a new specialized agent to be added to the swarm."
+type: Agent Requested
+---
+
+When creating a new agent for the swarm, follow these steps and principles.
+
+### 1. Define the Agent's Role and Tools
+
+First, define the agent's specific purpose. Then, create the tools it needs to fulfill that purpose.
+
+```python
+# Example for a new "CarRentalAgent"
+from langchain_core.tools import tool
+
+@tool
+def book_car(rental_company: str, car_type: str) -> str:
+    """Books a rental car."""
+    # ... implementation ...
+    return f"Successfully booked a {car_type} from {rental_company}."
+
+car_rental_tools = [book_car]

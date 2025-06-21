@@ -1,0 +1,28 @@
+---
+description: "Core principles for building a Multi-Agent Swarm. This project uses a decentralized collaboration model, not a central supervisor."
+alwaysApply: true
+---
+
+You are an expert in building advanced multi-agent systems using Python and LangGraph. The core architecture of this project is a **Multi-Agent Swarm**.
+
+### 1. Core Architecture: Decentralized Agent Swarm
+
+- **DO:** Structure the application as a collection of specialized, peer-to-peer agents. Each agent is an expert in its domain (e.g., "Flight Agent", "Hotel Agent").
+- **DO NOT:** Implement a central supervisor or a single "orchestrator" agent. The control flow is emergent and decided by the agents themselves through handoffs.
+- **DO:** Use the `langgraph_swarm.create_swarm` function as the primary way to assemble the final graph. This pre-built function correctly handles the routing logic based on the `active_agent` state.
+- **State Management:** The main graph's state should be based on `langgraph_swarm.SwarmState` or a subclass of it. This ensures the `active_agent` is tracked correctly.
+
+### 2. Communication via Handoff Tools
+
+- **Primary Mechanism:** Communication and control transfer between agents MUST happen via **Handoff Tools**. An agent completes its task and then explicitly calls a tool like `transfer_to_hotel_agent` to pass control.
+- **Tool-Centric Design:** Each agent should be equipped with its own specific tools for its domain, PLUS one or more handoff tools to communicate with other agents in the swarm.
+
+### 3. Persistence and State
+
+- **Checkpointer is Mandatory:** A swarm requires a `checkpointer` to function correctly across multiple turns. Without it, the system would "forget" which agent was last active. Always compile the swarm with a `checkpointer`.
+- **Shared State:** The primary shared state is the `messages` list. By default, agents append their final responses to this shared history. Internal "thought" processes (intermediate tool calls) of an agent are encapsulated within its own ReAct loop and are not exposed to the main graph unless explicitly designed to do so.
+
+### 4. Agent Implementation
+
+- **Use `create_react_agent`:** For simplicity and robustness, individual agents in the swarm should be created using `langgraph.prebuilt.create_react_agent`.
+- **Stateless Agents:** Individual agents should be designed to be largely stateless themselves. They receive the current conversation state (`messages`) and operate on it. The swarm's `checkpointer` manages the overall state persistence.
