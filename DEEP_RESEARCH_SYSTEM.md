@@ -4,25 +4,75 @@
 
 El **Sistema Deep Research** es una implementación avanzada de investigación de mercado que utiliza un equipo especializado de agentes que trabajan en paralelo para proporcionar análisis más profundos y completos para PYMEs.
 
-### 🏗️ Arquitectura: Patrón Map-Reduce
+## 🏗️ Arquitectura del Sistema
+
+### Patrón Map-Reduce con Send API
+
+El sistema implementa un patrón **Map-Reduce** usando la **Send API de LangGraph** para paralelización real:
+
+```python
+# SEND API: Distribuye consultas a workers paralelos
+def continue_to_workers(state: DeepResearchState) -> List[Send]:
+    return [
+        Send("research_worker", {"query": query})
+        for query in state["research_plan"]
+    ]
+
+# Configuración del grafo con Send API
+workflow.add_conditional_edges(
+    "planner",
+    continue_to_workers,
+    ["research_worker"]
+)
+```
+
+#### Flujo de Ejecución:
 
 ```mermaid
 graph TD
-    A[Usuario solicita investigación] --> B[Deep Research System]
-    B --> C[Planner Agent]
-    C --> D[Genera Plan: 4-6 consultas]
-    D --> E[Map Node: Distribuye tareas]
-    E --> F[Worker 1: Consulta paralela]
-    E --> G[Worker 2: Consulta paralela]
-    E --> H[Worker 3: Consulta paralela]
-    E --> I[Worker N: Consulta paralela]
-    F --> J[Synthesizer Node]
-    G --> J
-    H --> J
-    I --> J
-    J --> K[Informe Ejecutivo Final]
-    K --> L[Respuesta al Usuario]
+    A[START] --> B[Planner Node]
+    B --> C{Send API}
+    C --> D1[Worker 1]
+    C --> D2[Worker 2] 
+    C --> D3[Worker 3]
+    C --> D4[Worker 4]
+    C --> D5[Worker 5]
+    D1 --> E[Synthesizer]
+    D2 --> E
+    D3 --> E
+    D4 --> E
+    D5 --> E
+    E --> F[END]
 ```
+
+### Componentes Principales
+
+#### 1. **DeepResearchPlanner** (MAP)
+- Analiza el tema de investigación y contexto empresarial
+- Genera 4-6 consultas específicas y contextualizadas
+- Usa LLM para crear plan estratégico de investigación
+
+#### 2. **Research Workers** (PARALLEL EXECUTION)
+- **Send API de LangGraph**: Paralelización nativa y elegante
+- Cada worker ejecuta una consulta específica independientemente
+- Búsquedas simultáneas usando `search_web_advanced.ainvoke()`
+- Manejo robusto de errores por worker individual
+
+#### 3. **DeepResearchSynthesizer** (REDUCE)
+- Agrega todos los resultados de workers paralelos
+- Genera informes ejecutivos estructurados
+- Crea análisis consolidado con métricas de rendimiento
+
+### Ventajas de Send API vs asyncio.gather
+
+| Aspecto | Send API (LangGraph) | asyncio.gather |
+|---------|---------------------|----------------|
+| **Integración** | Nativa en el grafo | Código externo |
+| **Estado** | Manejo automático | Manual |
+| **Visualización** | Grafo visible | Caja negra |
+| **Debugging** | Logs por nodo | Difícil |
+| **Escalabilidad** | Automática | Manual |
+| **Elegancia** | Declarativa | Imperativa |
 
 ## 🧩 Componentes Principales
 
