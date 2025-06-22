@@ -3,15 +3,16 @@ Sistema de Deep Research - Arquitectura Map-Reduce para Investigación Paralela
 Implementa un equipo especializado: Planner + Workers paralelos + Synthesizer
 """
 
-import logging
 import asyncio
+import logging
 from typing import TypedDict, List, Annotated, Dict, Any
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langchain_community.tools import TavilySearchResults
 from langgraph.graph import StateGraph, START, END
-from langgraph.types import Send
+from langgraph.constants import Send  # Para Send API
+from tavily import TavilyClient
 from app.config.settings import LLM_MODEL, TAVILY_API_KEY
 
 logger = logging.getLogger(__name__)
@@ -19,7 +20,7 @@ logger = logging.getLogger(__name__)
 # === ESTADO DEL SISTEMA MAP-REDUCE ===
 
 class DeepResearchState(TypedDict):
-    """Estado del sistema de investigación profunda."""
+    """Estado compartido del sistema Deep Research."""
     research_topic: str
     business_context: Dict[str, Any]  # Información de la empresa
     research_plan: List[str]  # Lista de consultas de búsqueda generadas por el planner
@@ -255,7 +256,7 @@ LÍMITES:
             logger.error(f"[Deep Research Synthesizer] ❌ Error en síntesis: {str(e)}")
             return f"La investigación sobre '{research_topic}' encontró información relevante, pero hubo un error procesando el informe final. Se recomienda revisar los hallazgos individualmente."
 
-# === NODOS DEL GRAFO MAP-REDUCE ===
+# === NODOS DEL GRAFO MAP-REDUCE CON SEND API ===
 
 def planner_node(state: DeepResearchState) -> Dict[str, Any]:
     """Nodo del Planner - Crea el plan de investigación."""
@@ -269,28 +270,26 @@ def planner_node(state: DeepResearchState) -> Dict[str, Any]:
     
     return {"research_plan": research_plan}
 
-def map_node(state: DeepResearchState) -> List[Send]:
-    """Nodo MAP - Distribuye tareas a workers paralelos."""
-    research_plan = state["research_plan"]
-    logger.info(f"[Deep Research System] 🗂️ MAP: Distribuyendo {len(research_plan)} tareas a workers...")
-    
-    # Crear una tarea Send para cada consulta del plan
-    tasks = [
-        Send("research_worker", {"query": query})
-        for query in research_plan
-    ]
-    
-    return tasks
-
 async def research_worker_node(state: Dict[str, str]) -> Dict[str, List[Dict]]:
-    """Nodo WORKER - Ejecuta investigación individual (PARALELO)."""
+    """Nodo WORKER - Ejecuta investigación individual (PARALELO con Send API)."""
     query = state["query"]
     logger.info(f"[Deep Research System] 🔍 WORKER: Ejecutando investigación para '{query}'")
     
-    # Ejecutar búsqueda
-    search_result = await search_web_advanced(query)
-    
-    return {"research_results": [search_result]}
+    # Ejecutar búsqueda usando la herramienta asíncrona
+    try:
+        search_result = await search_web_advanced.ainvoke({"query": query})
+        return {"research_results": [search_result]}
+    except Exception as e:
+        logger.error(f"[Deep Research System] ❌ Error en worker para '{query}': {str(e)}")
+        # Retornar resultado de error
+        error_result = {
+            "query": query,
+            "status": "error",
+            "error": str(e),
+            "results": [],
+            "results_count": 0
+        }
+        return {"research_results": [error_result]}
 
 def synthesizer_node(state: DeepResearchState) -> Dict[str, Any]:
     """Nodo REDUCE - Sintetiza todos los resultados."""
@@ -314,32 +313,48 @@ def synthesizer_node(state: DeepResearchState) -> Dict[str, Any]:
         "execution_summary": execution_summary
     }
 
-# === CONSTRUCCIÓN DEL GRAFO MAP-REDUCE ===
+# === CONSTRUCCIÓN DEL GRAFO MAP-REDUCE CON SEND API ===
 
 def create_deep_research_system():
     """
-    Crea el sistema completo de Deep Research con arquitectura Map-Reduce.
+    Crea el sistema completo de Deep Research con arquitectura Map-Reduce usando Send API.
     
-    Flujo: START -> planner -> map -> [workers paralelos] -> synthesizer -> END
+    Flujo: START -> planner -> [workers paralelos] -> synthesizer -> END
     """
-    logger.info("🏗️ [Deep Research System] Construyendo grafo Map-Reduce...")
+    logger.info("🏗️ [Deep Research System] Construyendo grafo Map-Reduce con Send API...")
     
     workflow = StateGraph(DeepResearchState)
     
     # === NODOS ===
     workflow.add_node("planner", planner_node)
-    workflow.add_node("map", map_node)
     workflow.add_node("research_worker", research_worker_node)
     workflow.add_node("synthesizer", synthesizer_node)
     
-    # === FLUJO ===
+    # === FLUJO CON SEND API ===
     workflow.set_entry_point("planner")
-    workflow.add_edge("planner", "map")
-    workflow.add_edge("map", "research_worker")  # MAP envía a WORKERS
-    workflow.add_edge("research_worker", "synthesizer")  # WORKERS van a SYNTHESIZER
+    
+    # SEND API: Desde planner distribuir a workers paralelos
+    def continue_to_workers(state: DeepResearchState) -> List[Send]:
+        """Función que distribuye las consultas a workers paralelos usando Send API."""
+        research_plan = state["research_plan"]
+        logger.info(f"[Deep Research System] 🗂️ DISTRIBUYENDO: {len(research_plan)} tareas a workers usando Send API...")
+        
+        return [
+            Send("research_worker", {"query": query})
+            for query in research_plan
+        ]
+    
+    workflow.add_conditional_edges(
+        "planner",
+        continue_to_workers,
+        ["research_worker"]
+    )
+    
+    # WORKERS van a SYNTHESIZER - reduce automático
+    workflow.add_edge("research_worker", "synthesizer")  
     workflow.add_edge("synthesizer", END)
     
-    logger.info("✅ [Deep Research System] Grafo Map-Reduce construido exitosamente")
+    logger.info("✅ [Deep Research System] Grafo Map-Reduce con Send API construido exitosamente")
     
     return workflow.compile()
 

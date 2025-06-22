@@ -289,7 +289,7 @@ async def process_message_with_enhanced_central_orchestrator(
         workflow = await create_enhanced_central_orchestrator_graph()
         
         # Configurar checkpointer asíncrono
-        checkpointer = get_async_postgres_saver()
+        checkpointer = await get_async_postgres_saver()
         compiled_graph = workflow.compile(checkpointer=checkpointer)
         
         # Configurar la ejecución
