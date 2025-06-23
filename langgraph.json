@@ -1,7 +1,7 @@
 {
     "dependencies": ["."],
     "graphs": {
-        "report": "./app/graph/report_graph.py:report_graph"
+        "kumak_studio": "./app/graph/central_orchestrator.py:central_orchestrator_studio"
     },
     "python_version": "3.11",
     "env": ".env",
