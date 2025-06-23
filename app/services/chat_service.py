@@ -35,9 +35,9 @@ async def process_message_central(
         
         # Usar el orquestador central refinado
         result = await process_message_with_central_orchestrator(
-            message=message,
+            user_message=message,
             thread_id=thread_id,
-            reset_thread=reset_thread
+            is_whatsapp=is_whatsapp
         )
         
         # Agregar metadatos adicionales

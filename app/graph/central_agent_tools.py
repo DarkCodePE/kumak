@@ -6,11 +6,12 @@ Usando InjectedState para acceso directo al estado y mejores prácticas de LangG
 import logging
 import asyncio
 from typing import Dict, Any, List, Optional, Annotated
-from langchain_core.tools import tool
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.tools import tool, InjectedToolCallId
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 from langgraph.prebuilt import InjectedState
+from langgraph.types import Command
 
 from app.config.settings import LLM_MODEL
 from app.graph.state import PYMESState
@@ -41,105 +42,127 @@ class MarketResearchResult(BaseModel):
 
 @tool
 def update_business_info(
-    state: Annotated[PYMESState, InjectedState]
-) -> BusinessInfoUpdate:
+    state: Annotated[PYMESState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
+    nombre_empresa: Optional[str] = None,
+    sector: Optional[str] = None,
+    productos_servicios_principales: Optional[str] = None,
+    ubicacion: Optional[str] = None,
+    descripcion_negocio: Optional[str] = None,
+    desafios_principales: Optional[str] = None,
+    anos_operacion: Optional[int] = None,
+    num_empleados: Optional[int] = None
+) -> Command:
     """
-    Extrae y actualiza información empresarial del último mensaje del usuario.
+    Actualiza campos específicos de información empresarial.
     
-    Usa esta herramienta cuando:
-    - El usuario menciona información de su negocio (nombre, productos, ubicación, etc.)
-    - Necesitas completar campos faltantes de BusinessInfo
-    - El usuario quiere corregir información existente
+    IMPORTANTE: Solo pasa los campos que necesitas actualizar basándote en lo que el usuario acaba de mencionar.
+    Los campos que no pases (None) se mantendrán con su valor actual.
     
-    La herramienta accede automáticamente al estado del grafo para obtener el mensaje del usuario
-    y la información empresarial actual.
+    Args:
+        nombre_empresa: Nombre de la empresa
+        sector: Sector empresarial (ej: "Pizzería", "Software", "Retail")
+        productos_servicios_principales: Productos o servicios principales
+        ubicacion: Ubicación de la empresa
+        descripcion_negocio: Breve descripción del negocio
+        desafios_principales: Principales desafíos que enfrenta
+        anos_operacion: Años de operación (número)
+        num_empleados: Número de empleados (número)
     """
     try:
-        logger.info("🔍 update_business_info: Analizando mensaje del usuario...")
+        logger.info("🔍 update_business_info: Actualizando campos específicos...")
         
-        # Acceder directamente al estado inyectado
-        messages = state.get("messages", [])
-        current_business_info = state.get("business_info", {})
+        # Obtener información empresarial actual
+        current_business_info = state.get("business_info", {}) or {}
         
-        # Obtener el último mensaje del usuario
-        user_message = ""
-        for msg in reversed(messages):
-            if isinstance(msg, HumanMessage):
-                user_message = msg.content
-                break
+        # Crear información actualizada: empezar con la actual y actualizar campos especificados
+        updated_info = current_business_info.copy()
         
-        if not user_message:
-            return BusinessInfoUpdate(
-                success=False,
-                updated_info=current_business_info,
-                missing_fields=["no_message"],
-                completeness_score=0.0,
-                message="No se encontró mensaje del usuario para procesar."
-            )
+        # Actualizar solo los campos que el LLM ha especificado (no None)
+        updates_made = []
         
-        logger.info(f"📝 Procesando mensaje: {user_message[:50]}...")
-        
-        # Usar BusinessInfoManager para extraer información
-        business_manager = get_business_info_manager()
-        thread_id = f"temp_{hash(user_message) % 10000}"
-        
-        # Ejecutar extracción de manera asíncrona
-        try:
-            loop = asyncio.get_running_loop()
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(asyncio.run, business_manager.extract_info(user_message, thread_id, current_business_info))
-                updated_info = future.result()
-        except RuntimeError:
-            updated_info = asyncio.run(business_manager.extract_info(user_message, thread_id, current_business_info))
+        if nombre_empresa is not None:
+            updated_info["nombre_empresa"] = nombre_empresa
+            updates_made.append("nombre_empresa")
+            
+        if sector is not None:
+            updated_info["sector"] = sector
+            updates_made.append("sector")
+            
+        if productos_servicios_principales is not None:
+            # Convertir string a lista si es necesario
+            if isinstance(productos_servicios_principales, str):
+                # Split por comas y limpiar espacios
+                productos_list = [p.strip() for p in productos_servicios_principales.split(',')]
+            else:
+                productos_list = productos_servicios_principales
+            updated_info["productos_servicios_principales"] = productos_list
+            updates_made.append("productos_servicios_principales")
+            
+        if ubicacion is not None:
+            updated_info["ubicacion"] = ubicacion
+            updates_made.append("ubicacion")
+            
+        if descripcion_negocio is not None:
+            updated_info["descripcion_negocio"] = descripcion_negocio
+            updates_made.append("descripcion_negocio")
+            
+        if desafios_principales is not None:
+            # Convertir string a lista si es necesario
+            if isinstance(desafios_principales, str):
+                # Split por comas y limpiar espacios
+                desafios_list = [d.strip() for d in desafios_principales.split(',')]
+            else:
+                desafios_list = desafios_principales
+            updated_info["desafios_principales"] = desafios_list
+            updates_made.append("desafios_principales")
+            
+        if anos_operacion is not None:
+            updated_info["anos_operacion"] = anos_operacion
+            updates_made.append("anos_operacion")
+            
+        if num_empleados is not None:
+            updated_info["num_empleados"] = num_empleados
+            updates_made.append("num_empleados")
         
         # Evaluar completitud
         critical_fields = ["nombre_empresa", "ubicacion", "productos_servicios_principales", "descripcion_negocio"]
         missing_fields = [field for field in critical_fields if not updated_info.get(field)]
         completeness = (len(critical_fields) - len(missing_fields)) / len(critical_fields)
         
-        # Guardar en memoria si hay nueva información
-        if updated_info != current_business_info:
-            logger.info("✅ Nueva información empresarial extraída")
-            try:
-                memory_service = get_memory_service()
-                memory_service.save_business_info(thread_id, updated_info)
-                logger.info(f"💾 Información guardada en memoria para thread: {thread_id}")
-            except Exception as e:
-                logger.warning(f"Error guardando en memoria: {str(e)}")
-        
-        # Generar mensaje apropiado basado en completitud
-        if not missing_fields:
-            empresa = updated_info.get("nombre_empresa", "tu empresa")
-            message = f"¡Perfecto! 🎉 Tengo toda la información de {empresa}. ¿En qué puedo ayudarte ahora?"
-        elif len(missing_fields) < len(critical_fields):
-            next_field_map = {
-                "nombre_empresa": "¿Cuál es el nombre de tu empresa?",
-                "ubicacion": "¿En qué ciudad o país opera tu negocio?",
-                "productos_servicios_principales": "¿Qué productos o servicios principales ofreces?",
-                "descripcion_negocio": "¿Podrías describir brevemente tu negocio?"
-            }
-            next_question = next_field_map.get(missing_fields[0], "¿Podrías darme más información sobre tu negocio?")
-            message = f"Gracias por la información. {next_question}"
+        # Generar mensaje apropiado
+        if updates_made:
+            if not missing_fields:
+                empresa = updated_info.get("nombre_empresa", "tu empresa")
+                message = f"¡Perfecto! 🎉 Información de {empresa} actualizada correctamente."
+            else:
+                message = f"Información actualizada: {', '.join(updates_made)}. ¡Gracias!"
         else:
-            message = "¡Hola! Me gustaría ayudarte con tu negocio. ¿Podrías contarme sobre tu empresa: nombre, qué productos/servicios ofreces y dónde opera?"
+            message = "No se especificaron campos para actualizar."
         
-        return BusinessInfoUpdate(
-            success=True,
-            updated_info=updated_info,
-            missing_fields=missing_fields,
-            completeness_score=completeness,
-            message=message
+        # DEBUG: Mostrar qué información se está guardando
+        logger.info(f"💾 DEBUG - Actualizando campos: {updates_made}")
+        logger.info(f"📊 DEBUG - Información actualizada: {updated_info}")
+        
+        # CLAVE: Actualizar el estado del grafo usando Command
+        tool_message = f"success=True updated_info={updated_info} missing_fields={missing_fields} completeness_score={completeness:.2f} message='{message}'"
+        
+        return Command(
+            update={
+                "business_info": updated_info,  # Actualizar información empresarial
+                "messages": [ToolMessage(content=tool_message, tool_call_id=tool_call_id)]
+            }
         )
         
     except Exception as e:
         logger.error(f"Error en update_business_info: {str(e)}")
-        return BusinessInfoUpdate(
-            success=False,
-            updated_info=state.get("business_info", {}),
-            missing_fields=["error"],
-            completeness_score=0.0,
-            message="Hubo un error procesando la información. ¿Podrías repetir?"
+        tool_message = f"success=False updated_info={state.get('business_info', {}) or {}} missing_fields=['error'] completeness_score=0.0 message='Hubo un error actualizando la información. ¿Podrías intentar nuevamente?'"
+        
+        return Command(
+            update={
+                "business_info": state.get("business_info", {}) or {},
+                "messages": [ToolMessage(content=tool_message, tool_call_id=tool_call_id)]
+            }
         )
 
 @tool
@@ -164,8 +187,11 @@ def perform_market_research(
     try:
         logger.info(f"🔬 perform_market_research: Iniciando investigación tipo '{research_type}'...")
         
-        # Acceder directamente al estado inyectado
-        business_info = state.get("business_info", {})
+        # Acceder directamente al estado inyectado con valores por defecto
+        business_info = state.get("business_info", {}) or {}
+        
+        # DEBUG: Mostrar información empresarial actual
+        logger.info(f"📋 DEBUG - business_info actual: {business_info}")
         
         # 1. VALIDACIÓN: Verificar información crítica
         critical_fields = ["nombre_empresa", "ubicacion", "productos_servicios_principales", "descripcion_negocio"]
@@ -185,9 +211,19 @@ def perform_market_research(
         
         # 2. INVESTIGACIÓN: Generar análisis de mercado
         empresa = business_info.get("nombre_empresa", "la empresa")
-        sector = business_info.get("sector", business_info.get("productos_servicios_principales", ""))
+        sector = business_info.get("sector", "")
         ubicacion = business_info.get("ubicacion", "")
-        productos = business_info.get("productos_servicios_principales", "")
+        
+        # Manejar productos_servicios_principales como lista o string
+        productos_raw = business_info.get("productos_servicios_principales", "")
+        if isinstance(productos_raw, list):
+            productos = ", ".join(productos_raw)
+        else:
+            productos = productos_raw
+        
+        # Si no hay sector, usar los productos como contexto
+        if not sector and productos:
+            sector = productos
         
         llm = ChatOpenAI(model=LLM_MODEL, temperature=0.7, max_tokens=150)  # Límite para WhatsApp
         
@@ -269,6 +305,7 @@ Máximo 150 tokens, trends accionables."""
             message="Hubo un error realizando la investigación. ¿Podrías intentar nuevamente?"
         )
 
+
 @tool
 def provide_business_consultation(
     state: Annotated[PYMESState, InjectedState],
@@ -289,9 +326,9 @@ def provide_business_consultation(
     try:
         logger.info(f"💬 provide_business_consultation: Tema '{consultation_topic}'...")
         
-        # Acceder directamente al estado inyectado
+        # Acceder directamente al estado inyectado con valores por defecto
         messages = state.get("messages", [])
-        business_info = state.get("business_info", {})
+        business_info = state.get("business_info", {}) or {}
         
         # Obtener la pregunta del usuario desde el último mensaje
         user_question = ""
@@ -342,7 +379,7 @@ def check_business_info_completeness(
     
     Útil para validar si se puede proceder con investigación o análisis avanzados.
     """
-    business_info = state.get("business_info", {})
+    business_info = state.get("business_info", {}) or {}
     
     critical_fields = ["nombre_empresa", "ubicacion", "productos_servicios_principales", "descripcion_negocio"]
     optional_fields = ["sector", "desafios_principales", "anos_operacion", "num_empleados"]

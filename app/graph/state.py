@@ -4,7 +4,7 @@ from operator import add
 
 from langchain_core.documents import Document
 from langchain_core.messages import BaseMessage
-from langgraph.graph import add_messages
+from langgraph.graph import add_messages, MessagesState
 from pydantic import BaseModel
 
 
@@ -53,33 +53,40 @@ class GrowthProposal(TypedDict):
     riesgos_identificados: List[str]
 
 
-class PYMESState(TypedDict):
-    """Estado principal del agente PYMES."""
-    # Mensajes de conversación
-    messages: Annotated[List[BaseMessage], add_messages]
-
-    # Entrada actual del usuario
+class PYMESState(MessagesState, total=False):
+    """
+    Estado principal del agente PYMES.
+    Hereda de MessagesState para compatibilidad con LangGraph Studio.
+    """
+    # NOTA: messages ya está incluido desde MessagesState
+    
+    # Entrada actual del usuario (OPCIONAL para Studio)
     input: Optional[str]
     answer: Optional[str]
-    feedback: List[str]
+    feedback: Optional[List[str]]
 
-    # Información del negocio
+    # Información del negocio (OPCIONAL para Studio)
     business_info: Optional[BusinessInfo]
     growth_goals: Optional[GrowthGoals]
     business_challenges: Optional[BusinessChallenges]
 
-    # Estado del proceso
+    # Estado del proceso (OPCIONAL para Studio)
     stage: Optional[str]  # "info_gathering", "analysis", "proposal_generation", "conversation"
 
-    # Propuesta generada
+    # Propuesta generada (OPCIONAL para Studio)
     growth_proposal: Optional[GrowthProposal]
 
-    # Contexto y memoria
+    # Contexto y memoria (OPCIONAL para Studio)
     context: Optional[str]
     summary: Optional[str]
     web_search: Optional[str]
     documents: Optional[List[Document]]
     
-    # Multi-agent state
+    # Multi-agent state (OPCIONAL para Studio)
     current_agent: Optional[str]  # Agente activo actual
     last_handoff: Optional[str]   # Última descripción de handoff
+    
+    # Campos adicionales para compatibilidad con Studio
+    business_context: Optional[str]  # Contexto empresarial simulado
+    needs_human_feedback: Optional[bool]  # Si necesita feedback humano
+    next_action: Optional[str]  # Próxima acción a realizar
