@@ -217,5 +217,33 @@ class BusinessInfoManager:
 
 @lru_cache
 def get_business_info_manager() -> BusinessInfoManager:
-    """Get a BusinessInfoManager instance."""
-    return BusinessInfoManager() 
+    """Obtiene una instancia cached del BusinessInfoManager."""
+    return BusinessInfoManager()
+
+async def get_business_context(thread_id: str) -> Dict[str, Any]:
+    """
+    Recupera el contexto empresarial completo para un thread específico.
+    
+    Args:
+        thread_id: ID del thread de conversación
+        
+    Returns:
+        Dict con la información empresarial del thread o dict vacío si no existe
+    """
+    try:
+        logger.info(f"🔍 Recuperando contexto empresarial para thread: {thread_id}")
+        
+        # Obtener información desde el servicio de memoria
+        memory_service = get_memory_service()
+        business_info = await memory_service.get_business_info(thread_id)
+        
+        if business_info:
+            logger.info(f"✅ Contexto empresarial encontrado: {len(business_info)} campos")
+            return business_info
+        else:
+            logger.info(f"ℹ️ No se encontró contexto empresarial para thread: {thread_id}")
+            return {}
+            
+    except Exception as e:
+        logger.error(f"❌ Error recuperando contexto empresarial: {str(e)}")
+        return {} 

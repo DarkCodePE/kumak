@@ -2,6 +2,8 @@ import logging
 import time
 from functools import wraps
 from typing import Callable, TypeVar, Any
+import asyncio
+import platform
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg_pool import ConnectionPool, AsyncConnectionPool
@@ -10,10 +12,12 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.store.postgres import PostgresStore
 
 from app.config.settings import (
-    postgresql_connection_string,
-    DB_POOL_SIZE,
+    POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB,
+    DB_POOL_SIZE, DB_MAX_OVERFLOW, DB_POOL_TIMEOUT, DB_POOL_RECYCLE,
     DB_CONNECTION_RETRIES,
-    DB_RETRY_DELAY
+    DB_RETRY_DELAY,
+    postgresql_async_connection_string,
+    postgresql_connection_string
 )
 
 logger = logging.getLogger(__name__)
@@ -153,35 +157,55 @@ def get_postgres_saver() -> PostgresSaver:
     return _postgres_saver
 
 
-async def get_async_postgres_saver() -> AsyncPostgresSaver:
+async def get_async_postgres_saver(max_retries: int = 3, retry_delay: float = 1.0):
     """
-    Get or create an AsyncPostgresSaver instance.
-    This is a singleton pattern to ensure we only have one instance.
+    Crea un checkpointer PostgreSQL asíncrono con manejo robusto de conexiones.
+    
+    Args:
+        max_retries: Número máximo de intentos de conexión
+        retry_delay: Tiempo de espera entre intentos (en segundos)
     """
-    global _async_postgres_saver
-
-    if _async_postgres_saver is None:
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    
+    # CORRECCIÓN CRÍTICA: Configurar Event Loop para Windows
+    if platform.system() == "Windows":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    
+    for attempt in range(max_retries):
         try:
-            # Set the correct event loop policy for Windows
-            import platform
-            if platform.system() == "Windows":
-                import asyncio
-                asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
-            pool = await get_async_connection_pool()
-
-            # Create AsyncPostgresSaver
-            _async_postgres_saver = AsyncPostgresSaver(pool)
-
-            # Initialize tables
-            await _async_postgres_saver.setup()
-            logger.info("Async PostgreSQL saver initialized successfully")
+            logger.info(f"🔧 Creando checkpointer PostgreSQL asíncrono (intento {attempt + 1}/{max_retries})...")
+            
+            # Pool de conexiones más robusto con configuración optimizada
+            pool = AsyncConnectionPool(
+                postgresql_async_connection_string,  # Usar la variable correcta
+                min_size=2,           # Mínimo 2 conexiones
+                max_size=10,          # Máximo 10 conexiones
+                max_idle=300.0,       # 5 minutos de idle máximo
+                max_lifetime=3600.0,  # 1 hora de vida máxima por conexión
+                timeout=30.0,         # 30 segundos timeout para obtener conexión
+                reconnect_timeout=10.0, # 10 segundos timeout para reconexión
+                open=True
+            )
+            
+            logger.info("✅ Pool de conexiones PostgreSQL async creado exitosamente")
+            
+            # Crear checkpointer con el pool
+            saver = AsyncPostgresSaver(pool)
+            
+            # Inicializar las tablas si es necesario
+            await saver.setup()
+            
+            logger.info("✅ Async PostgreSQL saver inicializado exitosamente")
+            return saver
+            
         except Exception as e:
-            print(e)
-            logger.error(f"Failed to initialize async PostgreSQL saver: {str(e)}")
-            raise
-
-    return _async_postgres_saver
+            logger.warning(f"⚠️ Error creando async saver (intento {attempt + 1}/{max_retries}): {str(e)}")
+            
+            if attempt < max_retries - 1:
+                await asyncio.sleep(retry_delay * (attempt + 1))  # Backoff exponencial
+            else:
+                logger.error(f"❌ Falló la creación del async saver después de {max_retries} intentos")
+                raise Exception(f"No se pudo conectar a PostgreSQL después de {max_retries} intentos: {str(e)}")
 
 
 @with_retry()
@@ -241,7 +265,6 @@ def close_postgres_connections() -> None:
 
         if _async_connection_pool is not None:
             # Close async pool
-            import asyncio
             asyncio.create_task(_async_connection_pool.close())
             logger.info("Async PostgreSQL connection pool closing")
     except Exception as e:

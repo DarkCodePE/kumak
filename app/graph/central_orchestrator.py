@@ -4,15 +4,19 @@ Implementa el patrón ReAct puro con ToolNode real y mejores prácticas de LangG
 """
 
 import logging
-from typing import Literal, Dict, Any, List
+import traceback
+from typing import Literal, Dict, Any, List, Optional
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_openai import ChatOpenAI
-from langgraph.graph import StateGraph
-from langgraph.prebuilt import ToolNode, create_react_agent  # CORRECCIÓN CRÍTICA
+from langgraph.graph import StateGraph, END
+from langgraph.prebuilt import ToolNode, create_react_agent, tools_condition
 from app.config.settings import LLM_MODEL
 from app.graph.state import PYMESState
 from app.graph.central_agent_tools import CENTRAL_AGENT_TOOLS
 from app.database.postgres import get_postgres_saver, get_async_postgres_saver
+from app.core.prompt import CENTRAL_ORCHESTRATOR_PROMPT
+from app.services.business_info_manager import get_business_context
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -76,98 +80,44 @@ IMPORTANTE: Las herramientas manejan sus propias validaciones. Tu trabajo es dec
 
 async def central_orchestrator_node(state: PYMESState) -> Dict[str, Any]:
     """
-    Nodo principal del agente central que actúa como director de orquesta.
-    Usa ReAct pattern para decidir qué herramientas invocar.
+    Nodo central del orquestrador que procesa mensajes y decide qué herramientas usar.
     """
-    try:
-        logger.info("🧠 central_orchestrator_node: Procesando mensaje...")
-        
-        # Obtener mensajes actuales
-        messages = state.get("messages", [])
-        
-        if not messages:
-            return {
-                "messages": [AIMessage(content="¡Hola! Soy tu asistente empresarial. ¿En qué puedo ayudarte con tu negocio?")]
-            }
-        
-        # Configurar el LLM con herramientas
-        llm = create_central_orchestrator_llm()
-        llm_with_tools = llm.bind_tools(CENTRAL_AGENT_TOOLS)
-        
-        # Construir historial de conversación con prompt del sistema
-        system_prompt = get_central_agent_prompt()
-        
-        # Crear mensajes para el LLM
-        conversation_messages = [
-            {"role": "system", "content": system_prompt}
-        ]
-        
-        # Agregar historial de mensajes recientes (últimos 6 para limitar tokens)
-        recent_messages = messages[-6:] if len(messages) > 6 else messages
-        
-        from langchain_core.messages import ToolMessage
-        
-        for msg in recent_messages:
-            if isinstance(msg, HumanMessage):
-                conversation_messages.append({"role": "user", "content": msg.content})
-            elif isinstance(msg, AIMessage):
-                if msg.tool_calls:
-                    # Mensaje con tool calls
-                    conversation_messages.append({
-                        "role": "assistant", 
-                        "content": msg.content or "",
-                        "tool_calls": msg.tool_calls
-                    })
-                else:
-                    # Mensaje normal del asistente
-                    conversation_messages.append({"role": "assistant", "content": msg.content})
-            elif isinstance(msg, ToolMessage):
-                # CORRECCIÓN CRÍTICA: Incluir respuestas de herramientas
-                conversation_messages.append({
-                    "role": "tool",
-                    "content": msg.content,
-                    "tool_call_id": msg.tool_call_id
-                })
-        
-        # Invocar el LLM
-        response = await llm_with_tools.ainvoke(conversation_messages)
-        
-        logger.info(f"✅ Agente central respondió: {len(response.content) if response.content else 0} chars, {len(response.tool_calls) if response.tool_calls else 0} tool calls")
-        
-        # Retornar la respuesta del agente
-        return {
-            "messages": [response]
-        }
-        
-    except Exception as e:
-        import traceback
-        error_detail = str(e)
-        stack_trace = traceback.format_exc()
-        logger.error(f"Error en central_orchestrator_node: {error_detail}")
-        logger.error(f"Stack trace del nodo: {stack_trace}")
-        
-        error_message = "Hubo un error procesando tu mensaje. ¿Podrías intentar nuevamente?"
-        return {
-            "messages": [AIMessage(content=error_message)]
-        }
+    logger.info("🧠 central_orchestrator_node: Procesando mensaje...")
+    
+    # Preparar mensajes para el LLM
+    messages = state["messages"].copy()
+    
+    # Agregar contexto empresarial si existe
+    if state.get("business_context"):
+        business_info = f"\\n\\n### CONTEXTO EMPRESARIAL:\\n{state['business_context']}"
+        if messages and isinstance(messages[-1], HumanMessage):
+            messages[-1].content += business_info
+    
+    # Invocar el LLM con herramientas
+    llm_with_tools = llm.bind_tools(CENTRAL_AGENT_TOOLS)
+    result = await llm_with_tools.ainvoke([
+        {"role": "system", "content": CENTRAL_ORCHESTRATOR_PROMPT},
+        *[{"role": m.type, "content": m.content} for m in messages]
+    ])
+    
+    # Log de la respuesta
+    tool_calls = len(result.tool_calls) if hasattr(result, 'tool_calls') else 0
+    logger.info(f"✅ Agente central respondió: {len(result.content)} chars, {tool_calls} tool calls")
+    
+    return {"messages": [result]}
 
 # === LÓGICA DE CONTROL DEL GRAFO ===
 
-def should_continue(state: PYMESState) -> Literal["tools", "__end__"]:
-    """
-    Decide si ejecutar herramientas o finalizar el turno del asistente.
-    Patrón ReAct puro - más simple y elegante.
-    """
+def should_continue(state: PYMESState) -> str:
+    """Función de control que decide si continuar o terminar."""
     last_message = state["messages"][-1]
     
-    # Si el último mensaje tiene tool_calls, ejecutar herramientas
     if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
         logger.info(f"🔧 should_continue: Ejecutando {len(last_message.tool_calls)} herramientas...")
         return "tools"
-    
-    # Si no hay tool_calls, el turno del asistente termina
-    logger.info("✅ should_continue: Finalizando turno del asistente")
-    return "__end__"
+    else:
+        logger.info("✅ should_continue: Finalizando turno del asistente")
+        return END
 
 # === CONSTRUCCIÓN DEL GRAFO REFINADO ===
 
@@ -226,95 +176,91 @@ async def create_central_orchestrator_graph():
 # === FUNCIÓN DE PROCESAMIENTO PRINCIPAL ===
 
 async def process_message_with_central_orchestrator(
-    message: str,
+    user_message: str, 
     thread_id: str,
-    reset_thread: bool = False
+    is_whatsapp: bool = False,
+    max_retries: int = 3
 ) -> Dict[str, Any]:
     """
-    Procesa un mensaje usando el orquestador central refinado.
-    
-    Args:
-        message: Mensaje del usuario
-        thread_id: ID del hilo de conversación
-        reset_thread: Si reiniciar el hilo
-        
-    Returns:
-        Dict con 'status', 'answer', y metadatos
+    Procesa un mensaje usando el orquestador central con manejo robusto de errores de PostgreSQL.
     """
-    try:
-        logger.info(f"🚀 Procesando mensaje con orquestador central: {message[:50]}...")
-        
-        # Crear el grafo (ASÍNCRONO)
-        graph = await create_central_orchestrator_graph()
-        
-        # Configurar el estado inicial
-        initial_state = {
-            "messages": [HumanMessage(content=message)],
-            "thread_id": thread_id,
-            "business_info": {},  # Se poblará por las herramientas
-        }
-        
-        # Configurar thread
-        thread_config = {"configurable": {"thread_id": thread_id}}
-        
-        # Resetear thread si se solicita
-        if reset_thread:
-            logger.info(f"🔄 Reseteando thread: {thread_id}")
-            # El checkpointer maneja esto automáticamente con el nuevo estado
-        
-        # Ejecutar el grafo
-        logger.info(f"⚡ Ejecutando grafo para thread: {thread_id}")
-        final_state = await graph.ainvoke(initial_state, config=thread_config)
-        
-        # Extraer la respuesta final
-        messages = final_state.get("messages", [])
-        last_ai_message = None
-        
-        # Buscar el último mensaje del asistente
-        for msg in reversed(messages):
-            if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
-                last_ai_message = msg
-                break
-        
-        if last_ai_message:
-            response_text = last_ai_message.content
-            logger.info(f"✅ Respuesta generada: {len(response_text)} caracteres")
+    logger.info(f"🚀 Procesando mensaje con orquestador central: {user_message[:50]}...")
+    
+    # Estado inicial compatible con PYMESState
+    initial_state = {
+        "messages": [HumanMessage(content=user_message)],
+        "business_context": await get_business_context(thread_id),
+        "current_agent": "central_orchestrator",  # Requerido por PYMESState
+        "next_action": "",
+        "needs_human_feedback": False
+    }
+    
+    # Configuración del thread
+    thread_config = {"configurable": {"thread_id": thread_id}}
+    
+    # RETRY LOGIC PARA MANEJO DE ERRORES DE POSTGRESQL
+    for attempt in range(max_retries):
+        try:
+            # Crear el grafo y checkpointer
+            workflow = await create_central_orchestrator_graph()
+            checkpointer = await create_checkpointer_with_retry(max_retries=2)
             
-            return {
-                "status": "completed",
-                "answer": response_text,
-                "business_info": final_state.get("business_info", {}),
-                "thread_id": thread_id,
-                "metadata": {
-                    "total_messages": len(messages),
-                    "agent_type": "central_orchestrator",
-                    "pattern": "react_pure"
+            # Compilar el grafo con checkpointer
+            graph = workflow.compile(checkpointer=checkpointer)
+            logger.info("✅ Grafo de agente central (Patrón ReAct Puro) compilado exitosamente")
+            
+            # Ejecutar el grafo
+            logger.info(f"⚡ Ejecutando grafo para thread: {thread_id}")
+            final_state = await graph.ainvoke(initial_state, config=thread_config)
+            
+            # Procesar resultado exitoso
+            if final_state and "messages" in final_state:
+                assistant_message = final_state["messages"][-1]
+                response_text = assistant_message.content if hasattr(assistant_message, 'content') else "Respuesta procesada"
+                
+                logger.info(f"✅ Respuesta generada: {len(response_text)} caracteres")
+                
+                return {
+                    "status": "completed",
+                    "response": response_text,
+                    "thread_id": thread_id,
+                    "is_whatsapp": is_whatsapp
                 }
-            }
-        else:
-            logger.warning("No se encontró respuesta del asistente")
+            else:
+                raise Exception("Estado final inválido del grafo")
+                
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"❌ Error en orquestador central (intento {attempt + 1}/{max_retries}): {error_msg}")
+            
+            # Si es un error de PostgreSQL y no es el último intento, reintentamos
+            if ("server closed the connection" in error_msg or 
+                "connection" in error_msg.lower() or 
+                "postgresql" in error_msg.lower()) and attempt < max_retries - 1:
+                
+                logger.info(f"🔄 Reintentando debido a error de conexión PostgreSQL...")
+                await asyncio.sleep(2.0 * (attempt + 1))  # Backoff exponencial
+                continue
+            
+            # Si llegamos aquí, el error es irrecuperable o agotamos los reintentos
+            logger.error(f"❌ Error irrecuperable en orquestador central: {error_msg}")
+            logger.error(f"Stack trace completo: {traceback.format_exc()}")
+            
             return {
                 "status": "error",
-                "answer": "No se pudo generar una respuesta. ¿Podrías intentar nuevamente?",
-                "business_info": final_state.get("business_info", {}),
-                "thread_id": thread_id
+                "response": "Lo siento, hay un problema técnico temporalmente. Por favor intenta nuevamente en unos momentos.",
+                "error": error_msg,
+                "thread_id": thread_id,
+                "is_whatsapp": is_whatsapp
             }
-            
-    except Exception as e:
-        import traceback
-        error_detail = str(e)
-        stack_trace = traceback.format_exc()
-        logger.error(f"Error en process_message_with_central_orchestrator: {error_detail}")
-        logger.error(f"Stack trace completo: {stack_trace}")
-        
-        return {
-            "status": "error",
-            "answer": "Hubo un error procesando tu mensaje. ¿Podrías intentar nuevamente?",
-            "business_info": {},
-            "thread_id": thread_id,
-            "error": error_detail,
-            "stack_trace": stack_trace
-        }
+    
+    # Este punto no debería alcanzarse nunca
+    return {
+        "status": "error",
+        "response": "Error inesperado en el sistema.",
+        "thread_id": thread_id,
+        "is_whatsapp": is_whatsapp
+    }
 
 # === FUNCIONES AUXILIARES ===
 
@@ -332,4 +278,139 @@ def get_orchestrator_info() -> Dict[str, Any]:
             "Validaciones internas",
             "Límite de tokens para WhatsApp"
         ]
+    }
+
+# === MANEJO ROBUSTO DE CHECKPOINTER ===
+
+async def create_checkpointer_with_retry(max_retries: int = 3, retry_delay: float = 1.0):
+    """
+    Crea un checkpointer con retry automático en caso de fallos de conexión.
+    """
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"🔧 Creando checkpointer PostgreSQL (intento {attempt + 1}/{max_retries})...")
+            checkpointer = await get_async_postgres_saver()
+            logger.info("✅ Checkpointer PostgreSQL creado exitosamente")
+            return checkpointer
+        except Exception as e:
+            logger.warning(f"⚠️ Error creando checkpointer (intento {attempt + 1}/{max_retries}): {str(e)}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(retry_delay * (attempt + 1))  # Backoff exponencial
+            else:
+                logger.error(f"❌ Falló la creación del checkpointer después de {max_retries} intentos")
+                raise e
+
+# === CONSTRUCCIÓN DEL GRAFO ===
+
+async def create_central_orchestrator_graph():
+    """
+    Crea y compila el grafo del orquestador central con manejo robusto de errores.
+    """
+    logger.info("🏗️ Creando grafo de agente central refinado...")
+    
+    # Crear el grafo
+    workflow = StateGraph(PYMESState)
+    
+    # Agregar nodos
+    workflow.add_node("central_orchestrator", central_orchestrator_node)
+    workflow.add_node("tools", ToolNode(CENTRAL_AGENT_TOOLS))
+    
+    # Definir flujo con control de herramientas
+    workflow.set_entry_point("central_orchestrator")
+    workflow.add_conditional_edges(
+        "central_orchestrator",
+        should_continue,
+        {"tools": "tools", END: END}
+    )
+    workflow.add_edge("tools", "central_orchestrator")
+    
+    return workflow
+
+# === FUNCIÓN PRINCIPAL CON MANEJO ROBUSTO DE ERRORES ===
+
+async def process_message_with_central_orchestrator(
+    user_message: str, 
+    thread_id: str,
+    is_whatsapp: bool = False,
+    max_retries: int = 3
+) -> Dict[str, Any]:
+    """
+    Procesa un mensaje usando el orquestador central con manejo robusto de errores de PostgreSQL.
+    """
+    logger.info(f"🚀 Procesando mensaje con orquestador central: {user_message[:50]}...")
+    
+    # Estado inicial compatible con PYMESState
+    initial_state = {
+        "messages": [HumanMessage(content=user_message)],
+        "business_context": await get_business_context(thread_id),
+        "current_agent": "central_orchestrator",  # Requerido por PYMESState
+        "next_action": "",
+        "needs_human_feedback": False
+    }
+    
+    # Configuración del thread
+    thread_config = {"configurable": {"thread_id": thread_id}}
+    
+    # RETRY LOGIC PARA MANEJO DE ERRORES DE POSTGRESQL
+    for attempt in range(max_retries):
+        try:
+            # Crear el grafo y checkpointer
+            workflow = await create_central_orchestrator_graph()
+            checkpointer = await create_checkpointer_with_retry(max_retries=2)
+            
+            # Compilar el grafo con checkpointer
+            graph = workflow.compile(checkpointer=checkpointer)
+            logger.info("✅ Grafo de agente central (Patrón ReAct Puro) compilado exitosamente")
+            
+            # Ejecutar el grafo
+            logger.info(f"⚡ Ejecutando grafo para thread: {thread_id}")
+            final_state = await graph.ainvoke(initial_state, config=thread_config)
+            
+            # Procesar resultado exitoso
+            if final_state and "messages" in final_state:
+                assistant_message = final_state["messages"][-1]
+                response_text = assistant_message.content if hasattr(assistant_message, 'content') else "Respuesta procesada"
+                
+                logger.info(f"✅ Respuesta generada: {len(response_text)} caracteres")
+                
+                return {
+                    "status": "completed",
+                    "response": response_text,
+                    "thread_id": thread_id,
+                    "is_whatsapp": is_whatsapp
+                }
+            else:
+                raise Exception("Estado final inválido del grafo")
+                
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"❌ Error en orquestador central (intento {attempt + 1}/{max_retries}): {error_msg}")
+            
+            # Si es un error de PostgreSQL y no es el último intento, reintentamos
+            if ("server closed the connection" in error_msg or 
+                "connection" in error_msg.lower() or 
+                "postgresql" in error_msg.lower()) and attempt < max_retries - 1:
+                
+                logger.info(f"🔄 Reintentando debido a error de conexión PostgreSQL...")
+                await asyncio.sleep(2.0 * (attempt + 1))  # Backoff exponencial
+                continue
+            
+            # Si llegamos aquí, el error es irrecuperable o agotamos los reintentos
+            logger.error(f"❌ Error irrecuperable en orquestador central: {error_msg}")
+            logger.error(f"Stack trace completo: {traceback.format_exc()}")
+            
+            return {
+                "status": "error",
+                "response": "Lo siento, hay un problema técnico temporalmente. Por favor intenta nuevamente en unos momentos.",
+                "error": error_msg,
+                "thread_id": thread_id,
+                "is_whatsapp": is_whatsapp
+            }
+    
+    # Este punto no debería alcanzarse nunca
+    return {
+        "status": "error",
+        "response": "Error inesperado en el sistema.",
+        "thread_id": thread_id,
+        "is_whatsapp": is_whatsapp
     } 

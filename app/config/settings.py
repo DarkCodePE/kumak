@@ -26,7 +26,7 @@ API_PORT = int(os.getenv("API_PORT", "9027"))
 API_WORKERS = int(os.getenv("API_WORKERS", "2"))
 
 # LLM settings
-LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4.1-nano")
+LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4.1-mini")
 LLM_MODEL_LARGE = os.getenv("LLM_MODEL_LARGE", "gpt-4.1-mini")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
